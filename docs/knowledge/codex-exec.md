@@ -130,7 +130,7 @@ supervisor 要连续开发用户指定的单个/多个模块的全部 Ticket，�
 4. 外部调度器**一次只执行一张**：从当前 `tasks.md`、TC、持久化记录和依赖复算可执行 Ticket，启动前记 `STARTING`；收到 `thread.started` 后立即持久化 `thread_id`。等待子进程结束，把**stdout JSONL 和 stderr 分开存储**，保存真实退出码/测试结果，独立验收；未通过就对同一 ID `codex exec resume` 修复，通过并回写后才重新选下一张。绝不对全部 Ticket 用简单 `foreach` 不验收地连续发包。
 5. **跨轮恢复**：脚本/调度记录保存 `目标仓 + 模块 + Ticket ID + thread_id + 最后终态/错误 + 测试证据`；进程中断后先盘点既有会话和当前磁盘状态，有可续接会话先恢复；不存在有效会话且确属未开始的 Ticket 才开新会话。依赖阻塞不擅自扩大开发范围。
 6. **故障边界**：外部 PowerShell 仅绕开“父 Codex 的命令执行工具”这一层，不保证子 Codex 自己的 Windows 沙盒能正常初始化。此前 `node_repl.exe` 被占用引发的 `setup refresh had errors`，**即使从外部 PowerShell 启动也可能复现**；遇到时保留日志、暂停有关 Ticket 并排查文件占用，不自动使用危险权限参数。
-7. **脚本必须是真正可运行的程序**，实现路径解析、依赖选票、日志和会话 ID 持久化、进程监控、独立验收、原会话续接和下一张循环。**仅有经验文档或一段示例命令并不能自动完成开发。** 若 Supervisor 无法接入 Codex 进程之外的独立 PowerShell 执行器，应先生成并验证实际脚本，再由外部执行器启动；不要谎称已绕开父 Codex 沙盒或已经执行 Ticket。
+7. **已实现的脚本入口**：本仓 `scripts/Invoke-CodexTicketDispatcher.ps1`，操作指引在 `docs/codex-ticket-dispatcher.md`，本地模拟测试为 `tests/Smoke-Dispatcher.ps1`。脚本需要本轮明确指定模块/tasks.md 和人工审定的 AcceptanceManifest 才允许正式派发；无验收清单时只可 `-DryRun`。它实现受控串行启动、状态原子持久化、PID/会话 ID、JSONL/stderr/退出码、Git 状态快照、独立运行测试与原会话续接；循环/越界/缺依赖或证据不足时停止，不自动跳票。**这些模拟测试不能证明真实 Codex Windows 沙盒已可用。** 必须由 Codex 进程外的独立 PowerShell 执行器启动；只在 Codex shell 中调用脚本仍是嵌套，不得报告为已解决沙盒问题。
 
 ### 坑
 - 只是把 `codex exec` 包在 `.ps1`，再由 Codex 的 shell 启动，仍然是**Codex → PowerShell → Codex** 的嵌套调用。
