@@ -139,3 +139,4 @@ supervisor 要连续开发用户指定的单个/多个模块的全部 Ticket，�
 - 只是把 `codex exec` 包在 `.ps1`，再由 Codex 的 shell 启动，仍然是**Codex → PowerShell → Codex** 的嵌套调用。
 - 外部脚本串行不等于自动验收；没核对 TC、真实测试、依赖、状态回写就启动下一张，仍然违反 `KNOW-DISPATCH-00`。
 - 外部启动方式不会关闭子 Codex 的 `workspace-write` 沙盒，也不应以绕过安全控制为目的。
+- Windows 桌面环境下 `Start-Process powershell.exe` 若不带 `-WindowStyle Hidden`，每次调用 Codex 或运行独立验收测试都会在屏幕弹出控制台黑框；调度器子进程封装已默认配置 `-WindowStyle Hidden` 彻底静默。若需主调度器自身也后台静默运行，启动命令添加 `-WindowStyle Hidden`，所有进度与结果由 `.supervisor-runtime/<batch>/progress.log` 和 `state.json` 追踪。

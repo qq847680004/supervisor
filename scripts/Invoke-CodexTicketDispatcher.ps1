@@ -180,7 +180,7 @@ function Encoded-Launcher([string]$Exe,[string[]]$Argv,[string]$ExitFile) {
 }
 function Launch-Command([string]$Exe,[string[]]$Argv,[string]$Cwd,[string]$InputFile,[string]$Stdout,[string]$Stderr,[string]$ExitFile){
  $encoded=Encoded-Launcher $Exe $Argv $ExitFile
- return (Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -WorkingDirectory $Cwd -RedirectStandardInput $InputFile -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -PassThru)
+ return (Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -WorkingDirectory $Cwd -RedirectStandardInput $InputFile -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -PassThru)
 }
 function Read-LinesShared([string]$Path){
  if(-not [IO.File]::Exists($Path)){return @()}
