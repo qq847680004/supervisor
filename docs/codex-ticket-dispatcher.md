@@ -36,6 +36,19 @@
 
 修改目标项目配置/文档的 Ticket 也要显式声明交付物、可运行的检查命令，不允许用空测试跳过。测试命令与项目安全规则应由用户审查；调度器只防止把模型回复当成独立测试，不提供 OS 沙盒隔离。目标项目必须由开发 CLI 自行回写真实的 TC 和 tasks.md 状态。
 
+## 开工告知与可观察进度
+
+- 确认范围/依赖后，Supervisor 应先告诉用户：本轮模块/目标 Ticket、当前选票的 Ticket ID 与文件路径、目标根、CLI、真实模型 ID + Medium/High 档位、已验收数/总数以及新会话还是 Resume；确认实际进程启动后再说“运行中”。
+- 外部 PowerShell 调度器实时打印 `[PLAN]`、`[STARTING]`、`[RUNNING]`、`[SESSION]`、`[VERIFY]`、`[TEST]`、`[DONE]`、`[NEEDS_FIX]`、`[BLOCKED]`、`[ALL_DONE]` 状态；日志同步保存在 `.supervisor-runtime/<batch>/progress.log`，可用 `Get-Content '<batch>\progress.log' -Wait -Encoding UTF8` 查看。
+- 进度数字 `[X/Y DONE]` 仅按**独立验收已通过的 Ticket** 统计，不根据 Codex 事件数、ExitCode=0 或 tasks.md 的勾选估算工作完成率。工具事件只表示有活动；运行中每隔约 30 秒且无关键事件才打印一次心跳（不是完成证据）。
+- Terminal 中的进度不会自动推送进 Web ChatGPT 的聊天气泡；Supervisor 若实际在聊天中指挥调度，需要从进程输出确认里程碑后主动转述，不能伪称支持后台推送。外部 CLI 运行任务的日志和进度仅在可访问的终端或文件中展示。
+
+## 模型额度用尽与人工恢复
+
+- Codex 正式会话在结构化 `error` / `turn.failed` 或 stderr 中明确报出 quota exhausted、usage limit reached、credits exhausted、额度耗尽等证据时，当前 CLI 进程终止后立即写入整个批次的 `PAUSED_QUOTA`；记录当前 Ticket、原会话 ID、模型档位、暂停时间及 JSONL/stderr 日志。退出码 `3` 表示额度暂停，而不是测试成功或失败。仅出现普通 `429`、临时限流或网络断线时不自动推断额度耗尽。
+- **额度暂停绝不自动重试、切换模型/档位/CLI/账号、启动下一 Ticket，或按恢复时间自动继续**。同参数重复启动会保持暂停，单独的 `-RetryBlocked` 也不能解除额度暂停。
+- 用户明确确认额度已恢复、授权继续后，才在原批次命令尾部追加 `-ResumeAfterQuota`；有原 Session ID 且确认旧进程终止时继续原会话。没有 Session ID 则持续暂停并要求人工检查原日志，不擅自开新会话。若额度尚未恢复，下一次实际 CLI 又报额度耗尽，会再次暂停。
+
 ## 运行与恢复
 
 - 前置校验：仅解析显式指定的 tasks.md，不递归扫描其它模块；从 Git 定位目标根和 AGENTS.md；比对任务行与 Ticket 的 Blocked by ID 集合，拒绝重复/循环/路径越界。

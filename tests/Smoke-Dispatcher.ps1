@@ -56,6 +56,11 @@ try {
  if(@($obj.Tickets|Where-Object {$_.State -eq 'DONE'}).Count -ne 2){throw 'some tickets not DONE'}
  if(@($obj.Tickets|Where-Object {$_.ID -eq 'T-DEMO-001'})[0].Attempts.Count -ne 2){throw 'original session not resumed'}
  if(@($obj.Tickets|Where-Object {$_.ID -eq 'T-DEMO-002'})[0].Attempts.Count -ne 1){throw 'new ticket did not get a new session'}
+ $progress=[IO.File]::ReadAllText((Join-Path $batch.FullName 'progress.log'),[Text.Encoding]::UTF8)
+ foreach($must in @('[PLAN]','[STARTING]','[RUNNING]','[SESSION]','[VERIFY]','[TEST]','[DONE]','[ALL_DONE]','gpt-6.1-sol / medium','T-DEMO-001','T-DEMO-002','[1/2 DONE]','[2/2 DONE]')) {
+  if(-not $progress.Contains($must)){throw "Progress output missing: $must"}
+ }
+
  & powershell.exe -NoProfile -File $driver -TaskPaths $mod -AcceptanceManifest $mf -StateDirectory $state -CodexPath $mock
  if($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $repo 'count-001')) -ne '2' -or (Get-Content (Join-Path $repo 'count-002')) -ne '1'){throw 'restart double-dispatched'}
  [IO.File]::WriteAllLines($t1,@('# Ticket: T-DEMO-001','Blocked by: T-DEMO-002','- [x] TC-DEMO-001'))

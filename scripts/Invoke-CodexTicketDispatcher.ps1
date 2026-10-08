@@ -11,14 +11,18 @@ param(
  [ValidateRange(1,10)][int]$MaxAttemptsPerTicket=3,
  [ValidateRange(0,86400)][int]$ProcessTimeoutSeconds=0,
  [switch]$DryRun,
- [switch]$RetryBlocked
+ [switch]$RetryBlocked,
+ [switch]$ResumeAfterQuota
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+# Windows PowerShell 5.1: use UTF-8 for readable multilingual terminal progress.
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch {}
 if (-not $StateDirectory) { $StateDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) '.supervisor-runtime' }
 $script:RuntimeFile=$null
 $script:State=$null
 $script:Manifest=$null
+$script:ProgressPath=$null
 function Resolve-Exact([string]$Path) {
  if(-not [IO.Path]::IsPathRooted($Path)){throw "Absolute path required: $Path"}
  return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
@@ -40,6 +44,17 @@ function Atomically-Save([string]$Path,[object]$Value) {
  } finally {if([IO.File]::Exists($tmp)){[IO.File]::Delete($tmp)}}
 }
 function Save-State {Atomically-Save $script:RuntimeFile $script:State}
+function Write-DispatchProgress([string]$Phase,[string]$TicketId,[string]$Detail) {
+ $count=0;$total=0
+ if($null -ne $script:State){
+  $total=@($script:State.Tickets).Count
+  $count=@($script:State.Tickets | Where-Object {$_.State -eq 'DONE'}).Count
+ }
+ $at=[datetime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
+ $line="[$at] [$Phase] [$count/$total DONE] [$TicketId] $Detail"
+ Write-Host $line
+ if($script:ProgressPath){[IO.File]::AppendAllText($script:ProgressPath,$line+[Environment]::NewLine,(New-Object Text.UTF8Encoding($false)))}
+}
 function Git-Root([string]$Dir){
  $r=@(& git -C $Dir rev-parse --show-toplevel 2>$null)
  if($LASTEXITCODE -ne 0 -or $r.Count -ne 1){throw "Not a single Git repository: $Dir"}
@@ -149,13 +164,56 @@ function Read-LinesShared([string]$Path){
  try{$rd=New-Object IO.StreamReader($fs);try{$raw=$rd.ReadToEnd()}finally{$rd.Dispose()};return @($raw -split '\r?\n' | Where-Object {$_ -ne ''})}finally{$fs.Dispose()}
 }
 function Sync-Events([object]$Record,[object]$Attempt){
- foreach($line in @(Read-LinesShared $Attempt.Stdout)){
-  try{$e=$line | ConvertFrom-Json -ErrorAction Stop}catch{continue}
+ if($null -eq $Attempt.PSObject.Properties['ProgressOffset']) {
+  $Attempt | Add-Member -NotePropertyName ProgressOffset -NotePropertyValue 0
+  $Attempt | Add-Member -NotePropertyName ProgressCommands -NotePropertyValue 0
+  $Attempt | Add-Member -NotePropertyName LastEventUtc -NotePropertyValue $null
+ }
+ $lines=@(Read-LinesShared $Attempt.Stdout)
+ $index=[int]$Attempt.ProgressOffset
+ $changed=$false
+ while($index -lt $lines.Count){
+  try{$e=$lines[$index] | ConvertFrom-Json -ErrorAction Stop}catch{break}
+  $index++
+  $changed=$true
+  $Attempt.LastEventUtc=[datetime]::UtcNow.ToString('o')
   if($e.type -eq 'thread.started' -and $null -ne $e.thread_id -and $e.thread_id -match '^[a-f0-9-]{36}$'){
    if($Record.SessionId -and $Record.SessionId -cne $e.thread_id){throw "Session ID mismatch for $($Record.ID)"}
-   if(-not $Record.SessionId){$Record.SessionId=$e.thread_id;Save-State}
+   if(-not $Record.SessionId) {
+    $Record.SessionId=$e.thread_id
+    Save-State
+    Write-DispatchProgress 'SESSION' $Record.ID ("已收到真实 Session ID=$($e.thread_id)")
+   }
+  }elseif($e.type -eq 'item.completed' -and $null -ne $e.item){
+   if($e.item.type -eq 'command_execution'){
+    $Attempt.ProgressCommands=[int]$Attempt.ProgressCommands+1
+    if($Attempt.ProgressCommands -eq 1 -or $Attempt.ProgressCommands % 5 -eq 0){
+     Write-DispatchProgress 'RUNNING' $Record.ID ("收到工具执行事件 $($Attempt.ProgressCommands) 项；仅表示有活动，非完成率")
+    }
+   }elseif($e.item.type -eq 'file_change'){
+    Write-DispatchProgress 'RUNNING' $Record.ID '收到文件变更事件，等待独立验收'
+   }
+  }elseif($e.type -eq 'turn.completed'){
+   Write-DispatchProgress 'VERIFY' $Record.ID '模型回合结束；等待进程退出及独立 TC/测试验收'
+  }elseif($e.type -eq 'turn.failed' -or $e.type -eq 'error'){
+   Write-DispatchProgress 'NEEDS_FIX' $Record.ID 'CLI 报告错误；保留原始 JSONL/stderr 供排查'
   }
  }
+ if($changed){$Attempt.ProgressOffset=$index;Save-State}
+}
+function Test-QuotaExhausted([object]$Attempt) {
+ # Only explicit usage/quota exhaustion, not a bare HTTP 429 or transient rate limit.
+ $pattern='(?i)(insufficient[_\s-]?quota|quota[_\s-]?(?:exceeded|exhausted|depleted)|(?:hit|reached|exceeded)\s+(?:your\s+|the\s+)?(?:usage|plan|subscription|monthly|weekly|daily)\s+limit|(?:usage|spending)\s+(?:cap|limit)\s+(?:reached|exceeded)|credits?\s+(?:exhausted|depleted)|(?:out of|no more)\s+(?:credits?|quota)|(?:quota|usage)\s+(?:resets?\s+at|will\s+reset)|额度(?:已)?(?:用完|耗尽|不足)|配额(?:已)?(?:用完|耗尽)|(?:达到|超出).{0,8}(?:使用|额度|配额).{0,6}(?:上限|限制))'
+ foreach($line in @(Read-LinesShared $Attempt.Stderr)) {
+  if($line -match $pattern){return $true}
+ }
+ foreach($line in @(Read-LinesShared $Attempt.Stdout)) {
+  try{$ev=$line | ConvertFrom-Json -ErrorAction Stop}catch{continue}
+  if($ev.type -eq 'error' -or $ev.type -eq 'turn.failed') {
+   if(($ev | ConvertTo-Json -Depth 15 -Compress) -match $pattern){return $true}
+  }
+ }
+ return $false
 }
 function Process-Live([object]$Record){
  if(-not $Record.Pid -or -not $Record.ProcessStartedUtc){return $false}
@@ -165,9 +223,14 @@ function Process-Live([object]$Record){
 }
 function Wait-For-Attempt([object]$Record,[object]$Attempt){
  $since=[datetime]::UtcNow
+ $lastHeartbeat=$since
  $graceUntil=$since.AddSeconds(5)
  while((Process-Live $Record) -or ((-not (Test-Path -LiteralPath $Attempt.ExitFile)) -and [datetime]::UtcNow -lt $graceUntil)){
   Sync-Events $Record $Attempt
+  if(([datetime]::UtcNow-$lastHeartbeat).TotalSeconds -ge 30){
+   $lastHeartbeat=[datetime]::UtcNow
+   Write-DispatchProgress 'RUNNING' $Record.ID ("进程仍在运行，PID=$($Record.Pid)；最后事件=$($Attempt.LastEventUtc)；等待新的真实进度")
+  }
   if($ProcessTimeoutSeconds -gt 0 -and ([datetime]::UtcNow-$since).TotalSeconds -ge $ProcessTimeoutSeconds){
    $Record.State='BLOCKED';$Record.Reason="PID $($Record.Pid) still alive on timeout; do not relaunch"
    Save-State;return $false
@@ -180,7 +243,18 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
   [IO.File]::WriteAllLines($Attempt.GitAfter,@(& git -C $Record.Root status --porcelain=v1 --untracked-files=all))
  }
  $Record.Pid=$null;$Record.ProcessStartedUtc=$null
+ if(Test-QuotaExhausted $Attempt){
+  $Record.State='PAUSED_QUOTA'
+  $Record.Reason='Selected CLI model usage/quota exhausted; manual resume required'
+  $script:State.PausedQuota=$true
+  $script:State.QuotaPausedUtc=[datetime]::UtcNow.ToString('o')
+  $script:State.QuotaPausedTicket=$Record.ID
+  Save-State
+  Write-DispatchProgress 'PAUSED_QUOTA' $Record.ID ("模型额度已用完，开发已暂停；CLI=Codex；模型=$($Attempt.Model) / $($Attempt.Effort)；Session=$($Record.SessionId)；stderr=$($Attempt.Stderr)；JSONL=$($Attempt.Stdout)；不自动重试或切换模型")
+  return $true
+ }
  $Record.State='NEEDS_FIX'
+ Write-DispatchProgress 'VERIFY' $Record.ID ("CLI 进程已退出，真实退出码=$($Attempt.ExitCode)；开始独立检查")
  $Record.Reason=if($null -eq $Attempt.ExitCode){'Missing process exit receipt'}elseif($Attempt.ExitCode -ne 0){"CLI exit code $($Attempt.ExitCode)"}else{'Needs independent acceptance'}
  Save-State
  return $true
@@ -214,6 +288,7 @@ function Run-Independent-Tests([object]$Ticket,[object]$Entry,[string]$EvidenceD
  $i=0
  foreach($spec in @($Entry.tests)){
   $i++
+  Write-DispatchProgress 'TEST' $Ticket.ID ("开始执行独立验收测试 $i/$(@($Entry.tests).Count)")
   if(-not $spec.file){throw "Missing test executable for $($Ticket.ID)"}
   $exe=[string]$spec.file
   $resolved=Get-Command $exe -ErrorAction Stop
@@ -227,6 +302,7 @@ function Run-Independent-Tests([object]$Ticket,[object]$Entry,[string]$EvidenceD
   $test.WaitForExit()
   $code=if(Test-Path -LiteralPath $exit){[int]([IO.File]::ReadAllText($exit).Trim())}else{999}
   $runs.Add([pscustomobject]@{Executable=$exe;Args=$args;ExitCode=$code;Stdout=$out;Stderr=$err})
+  Write-DispatchProgress 'TEST' $Ticket.ID ("独立测试 $i/$(@($Entry.tests).Count) 退出码=$code；证据=$out")
   if($code -ne 0){return [pscustomobject]@{Okay=$false;Reason="Independent test #$i failed ($code): $err";Runs=@($runs.ToArray())}}
  }
  return [pscustomobject]@{Okay=$true;Reason='';Runs=@($runs.ToArray())}
@@ -296,19 +372,23 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  $attempt | Add-Member -NotePropertyName GitBefore -NotePropertyValue (Join-Path $dir 'git-before.txt')
  $attempt | Add-Member -NotePropertyName GitAfter -NotePropertyValue (Join-Path $dir 'git-after.txt')
  [IO.File]::WriteAllLines($attempt.GitBefore,@(& git -C $Ticket.Root status --porcelain=v1 --untracked-files=all))
+ $previousReason=$Record.Reason
  $Record.Attempts=@($Record.Attempts)+@($attempt)
  $Record.State='STARTING';$Record.Reason='Written before process launch';Save-State
+ Write-DispatchProgress 'STARTING' $Ticket.ID ("任务文件=$($Ticket.TicketPath)；模块=$($Ticket.Module)；目标仓=$($Ticket.Root)；CLI=Codex；模型=$Model / $Effort；会话模式=$($attempt.Mode)；上次原因=$previousReason；尝试=$n/$MaxAttemptsPerTicket；日志=$($attempt.Stdout)")
  try{
   $proc=Launch-Command $ResolvedCodex $arguments $Ticket.Root $promptPath $attempt.Stdout $attempt.Stderr $attempt.ExitFile
   $Record.Pid=$proc.Id
   $Record.ProcessStartedUtc=$proc.StartTime.ToUniversalTime().ToString('o')
   $Record.State='RUNNING';$Record.Reason='';Save-State
-  Write-Host ("{0} #{1} PID={2} {3}" -f $Ticket.ID,$n,$proc.Id,$attempt.Mode)
+  Write-DispatchProgress 'RUNNING' $Ticket.ID ("已启动独立 Codex 进程 PID=$($proc.Id)；模型=$Model / $Effort；等待 thread.started；日志=$($attempt.Stdout)")
   if(-not (Wait-For-Attempt $Record $attempt)){return}
  }catch{
   # STARTING without PID is ambiguous: do not issue another new session.
   $Record.State='BLOCKED';$Record.Reason="Launch/tracking failure: $($_.Exception.Message)"
-  Save-State;return
+  Save-State
+  Write-DispatchProgress 'BLOCKED' $Ticket.ID ("启动或追踪失败，需检查日志与原进程；$($Record.Reason)")
+  return
  }
 }
 function Print-Report([object[]]$Tickets) {
@@ -348,6 +428,7 @@ try{
   $script:BatchDir=Join-Path $runtime $RunId
   [void](New-Item -ItemType Directory -Path $script:BatchDir -Force)
   $script:RuntimeFile=Join-Path $script:BatchDir 'state.json'
+  $script:ProgressPath=Join-Path $script:BatchDir 'progress.log'
   foreach($other in @(Get-ChildItem -LiteralPath $runtime -Directory)){
    if($other.FullName -eq $script:BatchDir){continue}
    $otherState=Join-Path $other.FullName 'state.json'
@@ -362,16 +443,20 @@ try{
   }
   if(Test-Path -LiteralPath $script:RuntimeFile){
    $script:State=[IO.File]::ReadAllText($script:RuntimeFile) | ConvertFrom-Json
+   if($null -eq $script:State.PSObject.Properties['PausedQuota']){$script:State | Add-Member -NotePropertyName PausedQuota -NotePropertyValue $false}
+   if($null -eq $script:State.PSObject.Properties['QuotaPausedUtc']){$script:State | Add-Member -NotePropertyName QuotaPausedUtc -NotePropertyValue $null}
+   if($null -eq $script:State.PSObject.Properties['QuotaPausedTicket']){$script:State | Add-Member -NotePropertyName QuotaPausedTicket -NotePropertyValue $null}
    if($script:State.Identity -cne $identity){throw 'RunId already belongs to a different scope/manifest'}
    if($script:State.CliPath -cne $resolvedCodex -or $script:State.HostName -cne $env:COMPUTERNAME){throw 'CLI path/host changed: do not reuse sessions without an explicit migration'}
    $script:State.Model=$Model;$script:State.Effort=$Effort;Save-State
   }else{
-   $script:State=[pscustomobject]@{Version=1;Identity=$identity;RunId=$RunId;CreatedUtc=[datetime]::UtcNow.ToString('o');Model=$Model;Effort=$Effort;CliPath=$resolvedCodex;HostName=$env:COMPUTERNAME;Scope=$canonical;Tickets=@()}
+   $script:State=[pscustomobject]@{Version=1;Identity=$identity;RunId=$RunId;CreatedUtc=[datetime]::UtcNow.ToString('o');PausedQuota=$false;QuotaPausedUtc=$null;QuotaPausedTicket=$null;Model=$Model;Effort=$Effort;CliPath=$resolvedCodex;HostName=$env:COMPUTERNAME;Scope=$canonical;Tickets=@()}
    foreach($t in $tickets){
     $script:State.Tickets+=([pscustomobject]@{Key=$t.Key;ID=$t.ID;Root=$t.Root;State='NOT_STARTED';Reason='';SessionId=$null;Pid=$null;ProcessStartedUtc=$null;Attempts=@();AcceptanceReceipt=$null})
    }
    Save-State
   }
+  Write-DispatchProgress 'PLAN' 'BATCH' ("已核验调度范围，盘点/恢复：范围=$($canonical -join '; ')；CLI=Codex；模型=$Model / $Effort；共 $(@($tickets).Count) 张 Ticket；日志=$script:ProgressPath")
   foreach($t in $tickets){
    $r=Get-Record $t.Key
    if($r.State -eq 'STARTING' -and -not $r.Pid){
@@ -383,8 +468,29 @@ try{
     [void](Wait-For-Attempt $r $attempt)
    }
   }
+  if($script:State.PausedQuota) {
+   if(-not $ResumeAfterQuota) {
+    Write-DispatchProgress 'PAUSED_QUOTA' $script:State.QuotaPausedTicket ("模型额度已用完，开发仍暂停；原 Session/日志保留；需用户确认额度恢复后显式恢复，暂停于 $($script:State.QuotaPausedUtc)")
+    [void](Print-Report $tickets)
+    exit 3
+   }
+   $paused=@($script:State.Tickets | Where-Object {$_.State -eq 'PAUSED_QUOTA'})
+   if($paused.Count -ne 1 -or -not $paused[0].SessionId -or $paused[0].Pid){
+    Write-DispatchProgress 'PAUSED_QUOTA' $script:State.QuotaPausedTicket '无法安全恢复：会话 ID 缺失、PID 未确认或状态冲突；必须人工核验'
+    [void](Print-Report $tickets)
+    exit 3
+   }
+   $paused[0].State='NEEDS_FIX'
+   $paused[0].Reason='User authorized resume after model quota was restored; continue original session'
+   $script:State.PausedQuota=$false
+   $script:State.QuotaPausedUtc=$null
+   $script:State.QuotaPausedTicket=$null
+   Save-State
+   Write-DispatchProgress 'RESUMING' $paused[0].ID ("用户授权额度恢复后继续原 Session=$($paused[0].SessionId)；模型=$Model / $Effort")
+  }
   $retryApplied=@{}
   while($true){
+   if($script:State.PausedQuota){break}
    $tickets=@(Read-Tickets $TaskPaths);Check-Graph $tickets
    foreach($t in $tickets){
     $r=Get-Record $t.Key
@@ -402,15 +508,22 @@ try{
     if($r.State -eq 'BLOCKED'){
      if($t.Checked -and -not ($r.Pid -and (Process-Live $r))){
       $finished=Verify-Ticket $t $r ([bool](@($r.Attempts).Count -gt 0))
-      if(-not $finished){$r.State='DONE';$r.Reason='Verified after external repair';Save-State}
+      if(-not $finished){$r.State='DONE';$r.Reason='Verified after external repair';Save-State;Write-DispatchProgress 'DONE' $t.ID '外部修复完成；独立验收通过'}
      }
      continue
     }
     if($r.State -eq 'RUNNING'){continue}
     if($t.Checked){
      $reason=Verify-Ticket $t $r ([bool](@($r.Attempts).Count -gt 0))
-     if(-not $reason){$r.State='DONE';$r.Reason='Independently verified';Save-State;$progress=$true;continue}
+     if(-not $reason){
+      $wasDone=($r.State -eq 'DONE')
+      $r.State='DONE';$r.Reason='Independently verified';Save-State
+      if(-not $wasDone){Write-DispatchProgress 'DONE' $t.ID '全部 TC/交付物/独立测试通过，允许选下一 Ticket'}
+      $progress=$true;continue
+     }
+     $reasonChanged=($r.Reason -cne $reason -or $r.State -ne 'NEEDS_FIX')
      $r.State='NEEDS_FIX';$r.Reason=$reason;Save-State
+     if($reasonChanged){Write-DispatchProgress 'NEEDS_FIX' $t.ID ("验收未通过；将仅续接原 Ticket，会话=$($r.SessionId)；原因=$reason")}
     }elseif($r.State -eq 'DONE'){
      $r.State='NEEDS_FIX';$r.Reason='tasks.md reverted';Save-State
     }
@@ -436,7 +549,13 @@ try{
     $r.State='BLOCKED';$r.Reason='Unresolved in-flight process';Save-State;continue
    }
    Invoke-Ticket $selected $r $resolvedCodex
+   if($script:State.PausedQuota){break}
    $progress=$true
+  }
+  if($script:State.PausedQuota){
+   [void](Print-Report $tickets)
+   Write-DispatchProgress 'PAUSED_QUOTA' $script:State.QuotaPausedTicket '额度耗尽，批次暂停；未验收 Ticket 保持未完成；不启动下一个 Ticket'
+   exit 3
   }
   foreach($t in $tickets){
    $r=Get-Record $t.Key
@@ -446,10 +565,10 @@ try{
      $d=@($tickets | Where-Object {$_.Key -ceq $key})
      $d.Count -ne 1 -or (Get-Record $key).State -ne 'DONE'
     })
-    if($unmet.Count -gt 0){$r.State='BLOCKED';$r.Reason='Unmet/out-of-scope dependency: '+($unmet -join ', ');Save-State}
+    if($unmet.Count -gt 0){$r.State='BLOCKED';$r.Reason='Unmet/out-of-scope dependency: '+($unmet -join ', ');Save-State;Write-DispatchProgress 'BLOCKED' $t.ID $r.Reason}
    }
   }
-  if(Print-Report $tickets){exit 0}else{exit 2}
+  if(Print-Report $tickets){Write-DispatchProgress 'ALL_DONE' 'BATCH' '全部 Ticket 独立验收完成';exit 0}else{Write-DispatchProgress 'PARTIAL/BLOCKED' 'BATCH' '未全部完成；请查看各 Ticket 状态及日志';exit 2}
  }finally{$lock.Dispose()}
 }catch{
  [Console]::Error.WriteLine("DISPATCH ERROR: $($_.Exception.Message)")

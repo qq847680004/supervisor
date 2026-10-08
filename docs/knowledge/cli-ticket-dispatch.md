@@ -59,6 +59,7 @@
 4. `implement` 是共同开发意图，但**实际入口按 CLI 分开构造**：Codex 首行 `$implement`，Cursor/Antigravity 首行 `/implement`（如果该版本已确认具备原生 Slash 入口），后续正文再写目标路径、规则、Ticket 与测试要求。不能把 `$implement /implement` 拼在同一行当作通用命令。**直接启动正式 Ticket 会话并在本次结构化结果里核对实际规则/Skill/代码/测试**；失败保留该 Ticket 会话处理，不每张另开探针。
 5. **每张 Ticket 在进程启动前就记录 `STARTING`，在收到会话 ID 后立即持久化** `(目标根、模块、Ticket ID、CLI、会话ID、进程ID、开始时间、JSONL/stdout/stderr日志路径、退出码、最后状态及测试证据)`；若启动后进程中断可据此恢复。记录在 Supervisor 的受控非提交位置，采用原子写入或先写临时文件再替换，避免断电留下半截状态。**同一张 Ticket 以 `(规范化目标根 + Ticket ID)` 为唯一键，重跑不能重复下发。**
 6. 逐行处理 **stdout 的结构化事件**，stderr 单独保存（含启动警告）；保存系统进程真实退出码，确认进程已退出且收到合理终态后再验收。不要把 stderr 混进 stdout 当 JSONL 解析，也不要只凭 `turn.completed`、超时返回或零退出码启动下一张。错误、无会话 ID、进程异常及结构化记录缺失转入 `SEC-DISPATCH-03`。
+7. **用户可见播报**：用户指定范围并经核验后，启动 CLI 前告知当前 Ticket ID/文件与目标模块、模型真实 ID + Medium/High 档位、开发 CLI、新会话或原会话续接和已验收 DONE/总数；实际启动后依据 PID、Session、工具事件、独立 TC/测试逐阶段告知 STARTING/RUNNING/VERIFY/TEST/DONE/NEEDS_FIX/BLOCKED。禁止把工具事件数当完成率，或在进程尚未启动时报告“开发中”。多 Ticket 逐张更新，最终归纳 ALL_DONE/PARTIAL；Web 端只能转述真实可取得的外部执行日志，不声称外部 PowerShell 能自动向 ChatGPT 聊天推送进度。
 
 ### 坑
 - `codex exec` 在目标仓执行，不是在 supervisor 根执行；每张新的 Ticket **不能带旧 session ID**。
@@ -71,12 +72,13 @@
 开发 CLI 退出、报错、结果不全，或复查现有 `tasks.md` 发现 `[ ]`、证据不一致、已有会话未验收。
 
 ### 步骤
-1. 每次以**目标仓磁盘现状 + 持久化调度记录**复核任务项、各 Ticket 的 `TC-*`、代码差异、必要测试和原会话日志；按 `NOT_STARTED/STARTING/RUNNING/NEEDS_FIX/BLOCKED/DONE` 分类，并明确记录未完成原因。`tasks.md` 的 `[x]` 不等于已验收，原有代码变更可能来自别的 Ticket，归属必须核对。
+1. 每次以**目标仓磁盘现状 + 持久化调度记录**复核任务项、各 Ticket 的 `TC-*`、代码差异、必要测试和原会话日志；按 `NOT_STARTED/STARTING/RUNNING/NEEDS_FIX/BLOCKED/PAUSED_QUOTA/DONE` 分类，并明确记录未完成原因。`tasks.md` 的 `[x]` 不等于已验收，原有代码变更可能来自别的 Ticket，归属必须核对。
 2. 发现已有正在运行的进程/会话，**先等待其真实终态或检查是否挂起**，禁止重复派发。无运行进程但保存有该 Ticket 的 session ID，则优先直接评估已有工作成果；未满足验收条件时进入同会话继续。
 3. 检查目标 `AGENTS.md`/命中规则、对应 CLI 的**原生 implement Skill**、当前 Ticket 实际交付、必要测试命令/结果以及 Ticket `TC-*` 与任务项是否一致。**允许纯配置/文档 Ticket 无业务代码 diff，但必须存在其定义的真实交付物**。测试被阻止、空回复、权限错误、错标完成或证据归属不明均不能通过。
 4. 对可修复的未满足项，整理**最小返工证据包**：Ticket ID、未通过 TC、预期行为、命令/错误原文、相关文件/差异、目标根目录、允许的修复范围；恢复**当前 Ticket 原会话**。Codex 用 `codex exec resume`；Cursor 用 `--resume <chat-id>`；Antigravity 用 `--conversation <conversation-id>`（确切参数以当前 CLI 帮助核对），严禁 `--continue` 猜最新会话。
 5. 每轮续接后再按第 1–3 步复验。**有可观测进展就继续本 Ticket**；重复同一种失败而没有新证据、会话无法恢复、依赖/凭据/权限/契约无法解决时明确记为 `BLOCKED`，报告最后错误和恢复前置条件，不无限重试，不擅自以全新 session 冒充历史会话。
 6. 若某 Ticket 真实阻塞，仅冻结依赖它的任务。经用户授权的**其它独立且就绪 Ticket** 可以保持一次一张继续；结束时仍需报告所有遗留阻塞，绝不宣称全范围完成。
+7. **额度耗尽是整个批次暂停的例外**：真实 CLI 结构化错误或 stderr 明确显示当前模型 Credits/usage quota 已耗尽，则当前进程退出后立刻记录 `PAUSED_QUOTA`（含 Ticket、模型、Session、已完成数、日志），整个批次禁止新 Ticket、原会话自动重试、自动换档/换模型/换 CLI/换账号；不能等待额度重置后自发继续。向用户告知暂停并保留未验收项，只有用户明确批准且额度已恢复后才允许原 Session 续接。仅 `429`、临时限流、网络错误不是额度耗尽的充分证据；不可确认时按普通错误保守阻塞并附日志。
 
 ### 坑
 - 上次 `tasks.md` 为 `[ ]` 但实际上已有代码/运行会话，不应直接新开一张同 Ticket 会话。
@@ -125,7 +127,7 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
 
 ### 步骤
 1. 先恢复用户**本轮明确指定**的所有目标路径与 CLI 选择；无法从用户输入和持久化记录可靠确定时只要求补充缺失信息，不擅自换目标。读取每份当前 `tasks.md` 及必要 Ticket/TC/测试和会话记录，重新构建进度表。
-2. 对每张 Ticket：`DONE` 有效则跳过；`STARTING/RUNNING` 先核查真实进程及会话，禁止重复启动；`NEEDS_FIX` 且原 ID 有效则同 CLI 原会话续接；`NOT_STARTED` 且依赖满足才新建会话；`BLOCKED` 检查是否已解除。**若有启动日志但无会话 ID，先从原始输出与 CLI 历史恢复准确 ID，确认无法恢复则报告阻塞，不能视为未开始重新派发。**
+2. 对每张 Ticket：`DONE` 有效则跳过；`STARTING/RUNNING` 先核查真实进程及会话，禁止重复启动；`NEEDS_FIX` 且原 ID 有效则同 CLI 原会话续接；`NOT_STARTED` 且依赖满足才新建会话；`BLOCKED` 检查是否已解除；`PAUSED_QUOTA` 保持批次暂停、等用户明确授权并确认额度恢复后再续接，不接受普通重试自动解除。**若有启动日志但无会话 ID，先从原始输出与 CLI 历史恢复准确 ID，确认无法恢复则报告阻塞，不能视为未开始重新派发。**
 3. 调度记录至少持久化 `scope/CLI/目标根/Ticket ID/session ID/进程ID/STARTING或终态/失败原因/日志和测试证据路径`，首次进程启动前就记录并在收到会话 ID 时立刻更新；重启时同时检查进程存活、日志和磁盘状态，避免重复启动。范围或执行器变化要明确形成新的调度批次，不覆盖历史会话映射。
 4. 对已确定可恢复的任务继续执行 `SEC-DISPATCH-02 → 03 → 04`，逐张直到全部验证完成；仅剩不可恢复阻塞时，按 Ticket 汇总错误、依赖链、必须由谁修复及具体恢复动作后停止。
 5. 不允许在目标项目之外乱建 Git worktree，不允许为证明“全部完成”擅自改 `[x]` 或跳过测试；若用户改变目标范围，应重新盘点并重新计算总数。

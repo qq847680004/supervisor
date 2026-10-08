@@ -131,6 +131,8 @@ supervisor 要连续开发用户指定的单个/多个模块的全部 Ticket，�
 5. **跨轮恢复**：脚本/调度记录保存 `目标仓 + 模块 + Ticket ID + thread_id + 最后终态/错误 + 测试证据`；进程中断后先盘点既有会话和当前磁盘状态，有可续接会话先恢复；不存在有效会话且确属未开始的 Ticket 才开新会话。依赖阻塞不擅自扩大开发范围。
 6. **故障边界**：外部 PowerShell 仅绕开“父 Codex 的命令执行工具”这一层，不保证子 Codex 自己的 Windows 沙盒能正常初始化。此前 `node_repl.exe` 被占用引发的 `setup refresh had errors`，**即使从外部 PowerShell 启动也可能复现**；遇到时保留日志、暂停有关 Ticket 并排查文件占用，不自动使用危险权限参数。
 7. **已实现的脚本入口**：本仓 `scripts/Invoke-CodexTicketDispatcher.ps1`，操作指引在 `docs/codex-ticket-dispatcher.md`，本地模拟测试为 `tests/Smoke-Dispatcher.ps1`。脚本需要本轮明确指定模块/tasks.md 和人工审定的 AcceptanceManifest 才允许正式派发；无验收清单时只可 `-DryRun`。它实现受控串行启动、状态原子持久化、PID/会话 ID、JSONL/stderr/退出码、Git 状态快照、独立运行测试与原会话续接；循环/越界/缺依赖或证据不足时停止，不自动跳票。**这些模拟测试不能证明真实 Codex Windows 沙盒已可用。** 必须由 Codex 进程外的独立 PowerShell 执行器启动；只在 Codex shell 中调用脚本仍是嵌套，不得报告为已解决沙盒问题。
+8. **开发进度可观察性**：Codex 调度器按批次生成受控 `progress.log`，终端打印带时间戳的 PLAN/STARTING/RUNNING/SESSION/VERIFY/TEST/DONE/BLOCKED/PAUSED_QUOTA 等事件。每张票打印真实 Ticket 文件、模块、CLI、模型 ID 和 Medium/High、Session、PID、真实测试收据以及 `已独立验收数/总数`。`turn.completed` 仅启动独立验收，不能被标 DONE；长时间无工具事件时按实际进程存活报告等待状态。日志在 `.supervisor-runtime/<batch>/progress.log`，不会自动转发到 ChatGPT 网页对话，Supervisor 必须根据真实可见证据向用户同步阶段信息。
+9. **额度耗尽暂停实现**：现有 `scripts/Invoke-CodexTicketDispatcher.ps1` 从 CLI JSONL 错误和 stderr 判断明确的额度耗尽，在 CLI 子进程终态后记录 `PAUSED_QUOTA`、保留原 Session 与日志、整个批次停止下发，退出码 3；普通重启和 `-RetryBlocked` 不会解除，用户确认额度恢复并明确授权后使用 `-ResumeAfterQuota` 才能继续原会话。CLI 报错只有单独 `429` 或短期限流不能自动断言额度耗尽。模拟测试见 `tests/Smoke-QuotaPause.ps1`，它不证明真实模型额度状态。
 
 ### 坑
 - 只是把 `codex exec` 包在 `.ps1`，再由 Codex 的 shell 启动，仍然是**Codex → PowerShell → Codex** 的嵌套调用。
