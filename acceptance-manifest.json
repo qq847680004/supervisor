@@ -1,0 +1,175 @@
+{
+  "tickets": {
+    "T-GOV-001": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-001-runtime-config.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-001",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-002": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-002-registry-discovery.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-002",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-003": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-003-metadata-browser.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-003",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-004": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-004-source-key-lifecycle.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-004",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-005": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-005-policy-create-edit.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-005",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-006": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-006-policy-lifecycle.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-006",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-007": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-007-platform-scope.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-007",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-008": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-008-external-scope.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-008",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    },
+    "T-GOV-009": {
+      "deliverables": [
+        "docs/scratch/data-governance/ticket-009-governance-audit.md"
+      ],
+      "tests": [
+        {
+          "file": "powershell.exe",
+          "args": [
+            "-NoProfile",
+            "-File",
+            "D:\\2026work\\work\\supervisor\\scripts\\Test-GovernanceTicket.ps1",
+            "-TicketId",
+            "T-GOV-009",
+            "-Root",
+            "D:\\2026work\\work\\digital-logistics"
+          ]
+        }
+      ]
+    }
+  }
+}

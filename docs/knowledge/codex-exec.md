@@ -100,13 +100,14 @@ supervisor 被指定用 Codex CLI 在某个**目标仓库**顺序下发 Ticket�
 
 ### 步骤
 1. **正常开发不先启动只读探针、`grill-me` 或额外的沙盒检测会话。** 按 `SEC-DISPATCH-02` 直接执行当前 Ticket 唯一的 `codex exec`。每张新 Ticket 新会话，当前 Ticket 未通过则只续接它的原会话。
-2. 在本次**正式开发会话**的提示词中显式 `$implement`，要求按目标 `AGENTS.md` 读取必要规则、Ticket/Spec。直接从此次运行的工具事件检查 `implement/SKILL.md`、Shell、代码修改与测试；若缺证据，在当前会话中补查，无法完成则报告阻塞，不另开探针。
+2. 在本次**正式开发会话**的提示词中显式 `$implement`，要求按目标 `AGENTS.md` 读取必要规则、Ticket/Spec。直接从此次运行的工具事件检查 `implement/SKILL.md`（或目标仓 `.cursor/rules/*.mdc` / `AGENTS.md`）、Shell、代码修改与测试；若目标仓无独立 `implement/SKILL.md`，以读取目标规则为准，若缺证据，在当前会话中补查，无法完成则报告阻塞，不另开探针。
 3. 出现 Windows `node_repl.exe` 文件占用、沙盒 `setup refresh` 失败、权限拒绝时应定位本地进程/沙盒日志；**不能自动升级到 `danger-full-access`、`--dangerously-bypass-approvals-and-sandbox`**。
 4. Codex 当前会话到达真实终态后，由 Supervisor 核对当前 Ticket TC、测试和代码变更；没通过则原会话续接修复，通过才启动下一张独立会话。**不创建子代理、不并行调度、不重复启动 Codex 检测。**
 
 ### 坑
 - `--sandbox workspace-write` 属于正常 Codex 会话的受限写入模式，Windows 仍可能初始化本地沙盒；去掉额外探针**不能保证完全不运行 Windows 沙盒**。`thread.started` 成功也不证明 Shell 正常。
-- Skill 标签、自动注入 `AGENTS.md` 和真正加载自定义规则/执行开发，是三个不同的验证对象。
+- Skill 标签、自动注入 `AGENTS.md` 和真正加载自定义规则/执行开发，是三个不同的验证对象；目标项目无独立 `SKILL.md` 时不可强求该单一文件名而忽视其实际规则加载证据。
+- Windows PowerShell 5.1 下执行回写文件时，`Get-Content` 默认按 ANSI (GBK) 解码，`(Get-Content tasks.md -Raw) -replace ... | Set-Content -Encoding utf8` 会将原 UTF-8 的长破折号（`—`）解码破坏并持久化为乱码 `鈥?`；读写必须显式带 `-Encoding utf8` 或使用 `[IO.File]::ReadAllText/WriteAllText`。
 
 ## SEC-CODEX-06 外部 PowerShell 串行调度与父进程隔离
 

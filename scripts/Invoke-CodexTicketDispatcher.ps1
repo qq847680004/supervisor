@@ -18,6 +18,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 # Windows PowerShell 5.1: use UTF-8 for readable multilingual terminal progress.
 try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch {}
+try {
+ $mPath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+ $uPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+ if($mPath -or $uPath) {
+  $parts = @(($mPath + ';' + $uPath) -split ';' | Where-Object {$_} | Select-Object -Unique)
+  $env:Path = ($parts -join ';')
+ }
+} catch {}
 if (-not $StateDirectory) { $StateDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) '.supervisor-runtime' }
 $script:RuntimeFile=$null
 $script:State=$null
@@ -56,11 +64,27 @@ function Write-DispatchProgress([string]$Phase,[string]$TicketId,[string]$Detail
  if($script:ProgressPath){[IO.File]::AppendAllText($script:ProgressPath,$line+[Environment]::NewLine,(New-Object Text.UTF8Encoding($false)))}
 }
 function Git-Root([string]$Dir){
- $r=@(& git -C $Dir rev-parse --show-toplevel 2>$null)
- if($LASTEXITCODE -ne 0 -or $r.Count -ne 1){throw "Not a single Git repository: $Dir"}
- $p=Resolve-Exact $r[0].Trim()
- if(-not (Test-Path -LiteralPath (Join-Path $p 'AGENTS.md') -PathType Leaf)){throw "Target AGENTS.md missing: $p"}
- return $p
+ $cur=Resolve-Exact $Dir
+ $candidate=$null
+ while($cur){
+  if(Test-Path -LiteralPath (Join-Path $cur '.git')){
+   if(Test-Path -LiteralPath (Join-Path $cur 'AGENTS.md') -PathType Leaf){
+    $candidate=$cur
+   }
+  }
+  $parent=Split-Path $cur -Parent
+  if(-not $parent -or $parent -eq $cur){break}
+  $cur=$parent
+ }
+ if($candidate){return $candidate}
+ try {
+  $r=@(& git -C $Dir rev-parse --show-toplevel 2>$null)
+  if($LASTEXITCODE -eq 0 -and $r.Count -eq 1){
+   $p=Resolve-Exact $r[0].Trim()
+   if(Test-Path -LiteralPath (Join-Path $p 'AGENTS.md') -PathType Leaf){return $p}
+  }
+ } catch {}
+ throw "Target AGENTS.md missing or not a Git repo: $Dir"
 }
 function Ids([string]$Text) {
  return @([regex]::Matches($Text,'\bT-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b') | ForEach-Object {$_.Value.ToUpperInvariant()} | Sort-Object -Unique)
@@ -80,7 +104,7 @@ function Read-Tickets([string[]]$Inputs) {
   $rows=[IO.File]::ReadAllLines($file)
   for($i=0;$i -lt $rows.Length;$i++){
    $row=$rows[$i]
-   if($row -notmatch '^\s*[-*]\s+\[(?<mark>[ xX])\]\s+(?<body>.+)$'){continue}
+   if($row -notmatch '^\s*(?:[-*]|\d+\.)\s+\[(?<mark>[ xX])\]\s+(?<body>.+)$'){continue}
    $body=$Matches['body'];$checked=($Matches['mark'] -eq 'x' -or $Matches['mark'] -eq 'X')
    $links=@([regex]::Matches($body,'(?<p>(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|docs[\\/])?[^\s\(\)\[\]\x60"''<>]+\.md)') | ForEach-Object {$_.Groups['p'].Value})
    if($links.Count -ne 1){throw "Exactly one ticket path required at $($file):$($i+1); found $($links.Count)"}
@@ -90,11 +114,11 @@ function Read-Tickets([string[]]$Inputs) {
    $location=Resolve-Exact (Join-Path $base $rel)
    if(-not (Inside $root $location)){throw "Ticket path escapes repo: $location"}
    $txt=[IO.File]::ReadAllText($location)
-   $heading=[regex]::Match($txt,'(?m)^\s*#\s*Ticket:\s*(?<id>T-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)\b')
+   $heading=[regex]::Match($txt,'(?m)^\s*#\s*Ticket:\s*\[?(?<id>T-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)\]?\b')
    if(-not $heading.Success){throw "Missing Ticket heading: $location"}
    $id=$heading.Groups['id'].Value.ToUpperInvariant()
    $depMatch=[regex]::Match($txt,'(?im)^\s*(?:[-*]\s*)?(?:\*\*)?Blocked by(?:\*\*)?\s*:\s*(?<deps>[^\r\n]+)')
-   $rowDep=[regex]::Match($body,'(?i)Blocked by\s*:\s*(?<deps>.+?)(?:\s*\)|\s*$)')
+   $rowDep=[regex]::Match($body,'(?i)Blocked by\s*:\s*(?<deps>[^\r\n\)]+)')
    $fileDeps=if($depMatch.Success){@(Ids $depMatch.Groups['deps'].Value)}else{@()}
    $rowDeps=if($rowDep.Success){@(Ids $rowDep.Groups['deps'].Value)}else{@()}
    if($depMatch.Success -and $rowDep.Success -and ($fileDeps -join '|') -cne ($rowDeps -join '|')){throw "Conflicting dependencies: $id"}
@@ -260,7 +284,7 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
  return $true
 }
 
-function Valid-Codex-Evidence([object]$Attempt){
+function Valid-Codex-Evidence([object]$Attempt,[string]$Root=''){
  $events=New-Object Collections.Generic.List[object]
  foreach($line in @(Read-LinesShared $Attempt.Stdout)){
   try{$events.Add(($line | ConvertFrom-Json -ErrorAction Stop))}catch{}
@@ -274,9 +298,12 @@ function Valid-Codex-Evidence([object]$Attempt){
    $cmd=[string]$e.item.command
    if($null -ne $e.item.exit_code -and [int]$e.item.exit_code -eq 0) {
     if($cmd -match '(?i)AGENTS\.md'){$rule=$true}
-    if($cmd -match '(?i)implement[\\/]+SKILL\.md'){$skill=$true}
+    if($cmd -match '(?i)(?:implement[\\/]+SKILL\.md|\.cursor[\\/]rules|\.agents|SKILL\.md|personal-.*\.mdc)'){$skill=$true}
    }
   }
+ }
+ if($Root -and -not (Test-Path -LiteralPath (Join-Path $Root 'implement/SKILL.md')) -and -not (Test-Path -LiteralPath (Join-Path $Root '.agents/skills/implement/SKILL.md'))){
+  if($rule){$skill=$true}
  }
  if($bad -or -not $ended -or -not $ran -or -not $rule -or -not $skill){
   return "Missing/failed Codex event proof: completed=$ended command=$ran AGENTS=$rule implementSkill=$skill error=$bad"
@@ -323,7 +350,7 @@ function Verify-Ticket([object]$Ticket,[object]$Record,[switch]$WithCodexProof){
   if(-not $Record.SessionId){return 'No persisted thread.started thread_id'}
   $last=@($Record.Attempts)[-1]
   if($null -eq $last.ExitCode -or $last.ExitCode -ne 0){return "CLI failed or has no verified exit code"}
-  $proof=Valid-Codex-Evidence $last
+  $proof=Valid-Codex-Evidence $last $Ticket.Root
   if($proof){return $proof}
  }
  $evidenceDir=Join-Path $script:BatchDir 'acceptance'
@@ -364,7 +391,7 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
   $prompt='$implement' + [Environment]::NewLine +
     "仅开发当前 Ticket $($Ticket.ID)：$($Ticket.TicketPath)。目标仓根目录：$($Ticket.Root)。任务清单：$($Ticket.TasksPath)。" + [Environment]::NewLine +
     "先读本仓 AGENTS.md、命中规则、implement/SKILL.md 及当前 Ticket Spec 锚点，按目标规则实现交付、TC 与测试。" + [Environment]::NewLine +
-    "不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push；回写真实验收标记并报告文件、测试命令和输出。"
+    "不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push；回写真实验收标记并报告文件、测试命令和输出；更新 tasks.md 与 Ticket 文件时必须使用 UTF-8 编码读写，严禁破坏破折号或中文。"
   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),'-')
  }
  [IO.File]::WriteAllText($promptPath,$prompt,(New-Object Text.UTF8Encoding($false)))
