@@ -541,11 +541,11 @@ try{
     }
     if($r.State -eq 'RUNNING'){continue}
     if($t.Checked){
+     if($r.State -eq 'DONE'){continue}
      $reason=Verify-Ticket $t $r ([bool](@($r.Attempts).Count -gt 0))
      if(-not $reason){
-      $wasDone=($r.State -eq 'DONE')
       $r.State='DONE';$r.Reason='Independently verified';Save-State
-      if(-not $wasDone){Write-DispatchProgress 'DONE' $t.ID '全部 TC/交付物/独立测试通过，允许选下一 Ticket'}
+      Write-DispatchProgress 'DONE' $t.ID '全部 TC/交付物/独立测试通过，允许选下一 Ticket'
       $progress=$true;continue
      }
      $reasonChanged=($r.Reason -cne $reason -or $r.State -ne 'NEEDS_FIX')
