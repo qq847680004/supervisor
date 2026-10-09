@@ -603,6 +603,15 @@ try{
    if($r.State -eq 'STARTING' -or $r.State -eq 'RUNNING'){
     $r.State='BLOCKED';$r.Reason='Unresolved in-flight process';Save-State;continue
    }
+   # 开工前前置校验：与完成后校验一致，判断最前一个 ticket[ ] 是否实际已开发完成
+   $preReason=Verify-Ticket $selected $r ([bool](@($r.Attempts).Count -gt 0))
+   if(-not $preReason){
+    $r.State='DONE';$r.Reason='Independently verified before dispatch';Save-State
+    Write-DispatchProgress 'DONE' $selected.ID '开工前校验确认已开发完成；已自动标记 [x]，进入下一 Ticket'
+    $progress=$true;continue
+   }
+   $modeDesc=if($r.SessionId){("继续开发既有任务（同一窗口续接 Session="+$r.SessionId+"）")}else{'全新开发任务（新会话）'}
+   Write-DispatchProgress 'STARTING' $selected.ID ("开工前状态确认：$modeDesc；前置校验原因=$preReason")
    Invoke-Ticket $selected $r $resolvedCodex
    if($script:State.PausedQuota){break}
    $progress=$true
