@@ -334,13 +334,38 @@ function Run-Independent-Tests([object]$Ticket,[object]$Entry,[string]$EvidenceD
  }
  return [pscustomobject]@{Okay=$true;Reason='';Runs=@($runs.ToArray())}
 }
+function Mark-Ticket-Done-On-Disk([object]$Ticket){
+ if(Test-Path -LiteralPath $Ticket.TasksPath){
+  $rawTasks=[IO.File]::ReadAllText($Ticket.TasksPath,[Text.Encoding]::UTF8)
+  $rows=$rawTasks -split '\r?\n'
+  $ticketFile=[IO.Path]::GetFileName($Ticket.TicketPath)
+  $updatedRows=@()
+  $changed=$false
+  foreach($row in $rows){
+   if($row -match '^\s*(?:[-*]|\d+\.)\s+\[\s*\]\s+(?<body>.+)$' -and $row.Contains($ticketFile)){
+    $updatedRows+=([regex]::Replace($row,'\[\s*\]','[x]',1))
+    $changed=$true
+   }else{
+    $updatedRows+=$row
+   }
+  }
+  if($changed){
+   [IO.File]::WriteAllText($Ticket.TasksPath,($updatedRows -join [Environment]::NewLine),(New-Object Text.UTF8Encoding($false)))
+  }
+ }
+ if(Test-Path -LiteralPath $Ticket.TicketPath){
+  $rawTicket=[IO.File]::ReadAllText($Ticket.TicketPath,[Text.Encoding]::UTF8)
+  if($rawTicket -match '(?im)^\s*[-*]\s+\[\s*\]\s+.*?\bTC-[A-Za-z0-9-]+'){
+   $updatedTicket=[regex]::Replace($rawTicket,'(?im)^(\s*[-*]\s+)\[\s*\](\s+.*?\bTC-[A-Za-z0-9-]+)','${1}[x]${2}')
+   [IO.File]::WriteAllText($Ticket.TicketPath,$updatedTicket,(New-Object Text.UTF8Encoding($false)))
+  }
+ }
+}
+
 function Verify-Ticket([object]$Ticket,[object]$Record,[switch]$WithCodexProof){
  $fresh=@(Read-Tickets @($Ticket.TasksPath) | Where-Object {$_.Key -eq $Ticket.Key})
  if($fresh.Count -ne 1 -or $fresh[0].TicketPath -cne $Ticket.TicketPath){return 'Ticket mapping was changed on disk'}
  $live=$fresh[0]
- if(-not $live.Checked){return 'tasks.md is unchecked'}
- $tc=Ticket-Checks $live.Text
- if(-not $tc.All){return "Ticket TC checkboxes incomplete: $($tc.Reason)"}
  $entry=Manifest-Entry $Ticket.ID
  foreach($relative in @($entry.deliverables)){
   $p=Safe-Delivery $Ticket.Root ([string]$relative)
@@ -358,14 +383,13 @@ function Verify-Ticket([object]$Ticket,[object]$Record,[switch]$WithCodexProof){
  $folder=Join-Path $evidenceDir ((SHA $Ticket.Key).Substring(0,16))
  if(-not (Test-Path -LiteralPath $folder)){[void](New-Item -ItemType Directory -Path $folder)}
  $test=Run-Independent-Tests $Ticket $entry $folder
+ $tc=Ticket-Checks $live.Text
  $receipt=[pscustomobject]@{Ticket=$Ticket.ID;VerifiedUtc=[datetime]::UtcNow.ToString('o');Checks=$tc;Deliverables=@($entry.deliverables);Tests=$test.Runs;Okay=$test.Okay;Reason=$test.Reason}
  Atomically-Save (Join-Path $folder 'receipt.json') $receipt
  $Record.AcceptanceReceipt=Join-Path $folder 'receipt.json'
  Save-State
  if(-not $test.Okay){return $test.Reason}
- # Re-read after tests in case an external actor or test modified the task.
- $post=@(Read-Tickets @($Ticket.TasksPath) | Where-Object {$_.Key -eq $Ticket.Key})
- if($post.Count -ne 1 -or -not $post[0].Checked -or -not (Ticket-Checks $post[0].Text).All){return 'Ticket state changed during acceptance'}
+ Mark-Ticket-Done-On-Disk $Ticket
  return ''
 }
 function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
@@ -385,13 +409,13 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  if($continuing){
   $prompt='$implement' + [Environment]::NewLine +
     "只继续原 Ticket $($Ticket.ID)，路径 $($Ticket.TicketPath)。上一轮验收不通过：$($Record.Reason)。" + [Environment]::NewLine +
-    "在 $($Ticket.Root) 复读 AGENTS.md、命中规则、implement/SKILL.md 和 Spec 锚点，修复未通过 TC 并实际运行测试；只修改此 Ticket；不启动其它 CLI/Agent，不自动 push。"
+    "在 $($Ticket.Root) 复读 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 和 Spec 锚点，修复未通过 TC 并实际运行测试；只修改业务生产代码与单元测试；严禁修改任何 ticket/task/spec 文档；不启动其它 CLI/Agent，不自动 push。"
   $arguments=@('exec','resume','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),$Record.SessionId,'-')
  }else{
   $prompt='$implement' + [Environment]::NewLine +
     "仅开发当前 Ticket $($Ticket.ID)：$($Ticket.TicketPath)。目标仓根目录：$($Ticket.Root)。任务清单：$($Ticket.TasksPath)。" + [Environment]::NewLine +
-    "先读本仓 AGENTS.md、命中规则、implement/SKILL.md 及当前 Ticket Spec 锚点，按目标规则实现交付、TC 与测试。" + [Environment]::NewLine +
-    "不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push；回写真实验收标记并报告文件、测试命令和输出；更新 tasks.md 与 Ticket 文件时必须使用 UTF-8 编码读写，严禁破坏破折号或中文。"
+    "先读本仓 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 及当前 Ticket Spec 锚点，按目标规则实现交付、TC 与测试。" + [Environment]::NewLine +
+    "红线约束：严禁修改或追加任何 docs/specs/**、ticket-*.md 和 tasks.md（全为只读契约，状态标记由调度器在独立验收通过后统一回写）；严格只实现业务代码与单元测试；确保本地测试通过；所有交付文件强制 UTF-8 无 BOM 保存，严禁破坏中文或写成乱码；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。"
   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),'-')
  }
  [IO.File]::WriteAllText($promptPath,$prompt,(New-Object Text.UTF8Encoding($false)))
@@ -533,15 +557,15 @@ try{
    foreach($t in $tickets){
     $r=Get-Record $t.Key
     if($r.State -eq 'BLOCKED'){
-     if($t.Checked -and -not ($r.Pid -and (Process-Live $r))){
+     if(-not ($r.Pid -and (Process-Live $r))){
       $finished=Verify-Ticket $t $r ([bool](@($r.Attempts).Count -gt 0))
       if(-not $finished){$r.State='DONE';$r.Reason='Verified after external repair';Save-State;Write-DispatchProgress 'DONE' $t.ID '外部修复完成；独立验收通过'}
      }
      continue
     }
     if($r.State -eq 'RUNNING'){continue}
-    if($t.Checked){
-     if($r.State -eq 'DONE'){continue}
+    if($r.State -eq 'DONE'){continue}
+    if($t.Checked -or (@($r.Attempts).Count -gt 0 -and -not $r.Pid)){
      $reason=Verify-Ticket $t $r ([bool](@($r.Attempts).Count -gt 0))
      if(-not $reason){
       $r.State='DONE';$r.Reason='Independently verified';Save-State
@@ -551,8 +575,6 @@ try{
      $reasonChanged=($r.Reason -cne $reason -or $r.State -ne 'NEEDS_FIX')
      $r.State='NEEDS_FIX';$r.Reason=$reason;Save-State
      if($reasonChanged){Write-DispatchProgress 'NEEDS_FIX' $t.ID ("验收未通过；将仅续接原 Ticket，会话=$($r.SessionId)；原因=$reason")}
-    }elseif($r.State -eq 'DONE'){
-     $r.State='NEEDS_FIX';$r.Reason='tasks.md reverted';Save-State
     }
    }
    $active=@($script:State.Tickets | Where-Object {$_.Pid -and (Process-Live $_)})
