@@ -366,6 +366,12 @@ function Verify-Ticket([object]$Ticket,[object]$Record,[switch]$WithCodexProof){
  $fresh=@(Read-Tickets @($Ticket.TasksPath) | Where-Object {$_.Key -eq $Ticket.Key})
  if($fresh.Count -ne 1 -or $fresh[0].TicketPath -cne $Ticket.TicketPath){return 'Ticket mapping was changed on disk'}
  $live=$fresh[0]
+ $cliMarked=($live.Checked -and (Ticket-Checks $live.Text).All)
+ if($cliMarked){
+  Write-DispatchProgress 'VERIFY' $Ticket.ID 'CLI 已在文档回写 [x]，进入调度器独立复核验收'
+ }else{
+  Write-DispatchProgress 'VERIFY' $Ticket.ID 'CLI 未标注或部分未标 [x]，执行调度器独立复核验收；通过后自动补齐'
+ }
  $entry=Manifest-Entry $Ticket.ID
  foreach($relative in @($entry.deliverables)){
   $p=Safe-Delivery $Ticket.Root ([string]$relative)
@@ -409,13 +415,13 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  if($continuing){
   $prompt='$implement' + [Environment]::NewLine +
     "只继续原 Ticket $($Ticket.ID)，路径 $($Ticket.TicketPath)。上一轮验收不通过：$($Record.Reason)。" + [Environment]::NewLine +
-    "在 $($Ticket.Root) 复读 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 和 Spec 锚点，修复未通过 TC 并实际运行测试；只修改业务生产代码与单元测试；严禁修改任何 ticket/task/spec 文档；不启动其它 CLI/Agent，不自动 push。"
+    "在 $($Ticket.Root) 复读 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 和 Spec 锚点，修复未通过 TC 并实际运行测试；TDD 测试通过后仅允许回写 Ticket TC 与 tasks.md 为 [x]；回写必须使用 UTF-8（无 BOM）保存，严禁破坏中文或写成乱码；严禁修改任何需求契约；不启动其它 CLI/Agent，不自动 push。"
   $arguments=@('exec','resume','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),$Record.SessionId,'-')
  }else{
   $prompt='$implement' + [Environment]::NewLine +
     "仅开发当前 Ticket $($Ticket.ID)：$($Ticket.TicketPath)。目标仓根目录：$($Ticket.Root)。任务清单：$($Ticket.TasksPath)。" + [Environment]::NewLine +
     "先读本仓 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 及当前 Ticket Spec 锚点，按目标规则实现交付、TC 与测试。" + [Environment]::NewLine +
-    "红线约束：严禁修改或追加任何 docs/specs/**、ticket-*.md 和 tasks.md（全为只读契约，状态标记由调度器在独立验收通过后统一回写）；严格只实现业务代码与单元测试；确保本地测试通过；所有交付文件强制 UTF-8 无 BOM 保存，严禁破坏中文或写成乱码；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。"
+    "开发与回写规范：完成 /implement 的 TDD 本地单测验证后，仅允许将当前 Ticket 内对应 - [x] **TC-* 与 tasks.md 对应行回写为 [x]；回写时强制使用 UTF-8（无 BOM）读写保存，严禁破坏中文或写成乱码；严禁修改任何 Spec 契约、Ticket 业务需求或 tasks.md 其他内容；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。"
   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),'-')
  }
  [IO.File]::WriteAllText($promptPath,$prompt,(New-Object Text.UTF8Encoding($false)))
