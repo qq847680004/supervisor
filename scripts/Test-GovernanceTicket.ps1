@@ -46,13 +46,13 @@ if ($LASTEXITCODE -ne 0) {
 $patternMap = @{
   'T-GOV-001' = 'RuntimeConfigValueValidatorTest'
   'T-GOV-002' = 'McpRegistryServiceTest'
-  'T-GOV-003' = '*MetadataBrowser*'
+  'T-GOV-003' = '*MetadataBrowser*,*Metadata*'
   'T-GOV-004' = 'McpApiKeyServiceTest'
   'T-GOV-005' = 'DataIsolationPolicyServiceTest'
-  'T-GOV-006' = '*PolicyLifecycle*'
-  'T-GOV-007' = '*PlatformScope*'
-  'T-GOV-008' = '*ExternalScope*'
-  'T-GOV-009' = '*GovernanceAudit*'
+  'T-GOV-006' = '*Policy*'
+  'T-GOV-007' = '*PlatformScope*,McpApiKeyServiceTest'
+  'T-GOV-008' = '*ExternalScope*,McpApiKeyServiceTest'
+  'T-GOV-009' = '*GovernanceAudit*,*Audit*'
 }
 $testPattern = if ($patternMap.ContainsKey($TicketId)) { $patternMap[$TicketId] } else { '*Governance*' }
 
