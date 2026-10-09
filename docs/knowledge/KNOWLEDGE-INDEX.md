@@ -1,4 +1,4 @@
-﻿# Knowledge Index
+# Knowledge Index
 
 本仓仅保留 **任务调度 + 三种开发 CLI** 四类经验。先按任务匹配 `KNOW-`，再按需读取 `SEC-` 切片。目标项目的业务规则应在其目标根目录读取。
 
@@ -15,6 +15,7 @@ Sections:
 - SEC-DISPATCH-06 调度中断后盘点恢复与阻塞报告
 - SEC-DISPATCH-07 默认开发模型与 High 档位覆盖
 - SEC-DISPATCH-08 自动唤醒器与巡检自愈
+- SEC-DISPATCH-09 用户即时命令下发与抢占插队响应
 
 ## KNOW-CODEX-00 Codex Exec 独立 Ticket 会话
 Path:
