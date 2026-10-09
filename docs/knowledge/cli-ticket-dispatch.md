@@ -36,6 +36,7 @@
 - `tasks.md` 用逗号、Ticket 用顿号或破折号表达依赖是正常格式差异；应抽取实际 Ticket ID 集合后比较，不能误报冲突。
 - 目标项目若在 `docs/` 等子目录建有独立 Git 仓库，单纯 `git rev-parse --show-toplevel` 会停在子目录，导致根目录与相对路径拼接为 `docs/docs/...` 且脱离主工程代码；必须向上追溯包含目标 `AGENTS.md` 的最外层业务开发仓根。
 - Windows PowerShell 5.1 调度脚本含多字节中文字符时必须保留 UTF-8 BOM，否则多字节编码错断会破坏引号导致语法解析异常。
+- 提取 Ticket ID 模式时若依赖 `\b` 单词边界，当 ID 前置字符为非 ASCII 的中文标点或 CJK 汉字时（CJK 在 Unicode 正则中属于 `\w` 字符类），单词边界将失效导致漏匹配并误报依赖冲突；必须采用前后环视 `(?<![A-Za-z0-9])T-...(?![A-Za-z0-9-])` 确保提取绝对健壮。
 
 ## SEC-DISPATCH-02 指定 CLI 与每 Ticket 独立会话下发
 

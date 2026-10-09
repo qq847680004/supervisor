@@ -87,7 +87,7 @@ function Git-Root([string]$Dir){
  throw "Target AGENTS.md missing or not a Git repo: $Dir"
 }
 function Ids([string]$Text) {
- return @([regex]::Matches($Text,'\bT-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b') | ForEach-Object {$_.Value.ToUpperInvariant()} | Sort-Object -Unique)
+ return @([regex]::Matches($Text,'(?<![A-Za-z0-9])T-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9-])') | ForEach-Object {$_.Value.ToUpperInvariant()} | Sort-Object -Unique)
 }
 function Read-Tickets([string[]]$Inputs) {
  $tickets=New-Object Collections.Generic.List[object]
