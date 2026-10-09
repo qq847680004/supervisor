@@ -1,4 +1,4 @@
-# 独立 CLI Ticket 顺序调度与验收闭环
+﻿# 独立 CLI Ticket 顺序调度与验收闭环
 
 ## SEC-DISPATCH-00 Supervisor 调度边界与共用约束
 
@@ -163,3 +163,25 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
 - 将“ChatGPT 6.1 Sol Medium”等显示名称原样传入 CLI，可能被拒绝；必须使用目标 CLI 实际支持的 ID。
 - “High”仅覆盖推理档位，不将 Sol、Grok、Gemini 切换成另一个模型系列。
 - 为检查模型额外启动探针会浪费时间；本流程只检查模型列表与正式会话返回，不通过换低级模型掩盖启动错误。
+
+## SEC-DISPATCH-08 自动唤醒器与巡检自愈
+
+### 适用
+主调度器因配额限制暂停（`PAUSED_QUOTA`）、单票测试/编译失败中断（`BLOCKED` / `NEEDS_FIX`），或需要在后台全自动监视运行终态、定时恢复及状态自愈。
+
+### 步骤
+1. **状态检查与自愈核心**：使用 `scripts/Invoke-AutoWakeSupervisor.ps1` 作为机器与 Agent 共用的状态机检测入口：
+   - `Check` 模式：分析最新 `state.json` 与 `progress.log`，返回结构化状态：`ACTIVE_RUNNING`、`WAITING_QUOTA`、`READY_TO_RESUME`、`ACTION_REQUIRED`、`ALL_DONE`。
+   - `ResumeIfReady` 模式：若当前系统时间已过额度重置窗口（或用户确认授权恢复），自动后台静默调起 `Start-DispatcherHidden.ps1 -ResumeAfterQuota` 恢复批次。
+   - `Diagnose` 模式：提取失败 Ticket 的测试输出与诊断信息。
+2. **结合 Antigravity 原生唤醒**：
+   - 额度等待：检测到 `WAITING_QUOTA` 时，取返回的 `RemainingSeconds`，使用 Antigravity IDE `schedule` 工具注册单次唤醒定时器（`DurationSeconds`），到点自动唤醒 Agent 上下文，无需死循环轮询。
+   - 终态通知：后台进程退出时，IDE 原生 Reactive Wakeup 会自动向 Agent 发送通知事件，触发 Agent 执行巡检与决策。
+3. **安全自愈红线**：
+   - 同一 Ticket 失败自愈尝试不能超过 2 次；连续失败必须停止并生成报告转人工决策。
+   - 额度重置窗口未过时严禁提前唤醒或重试。
+
+### 坑
+- PowerShell 5.1 在启用 `Set-StrictMode -Version Latest` 时，直接访问 PSCustomObject 动态 JSON 属性若该属性不存在会抛出 `PropertyNotFoundStrict`；必须使用 `obj.PSObject.Properties['prop']` 或封装辅助函数访问可选属性。
+- PowerShell 双引号字符串内插变量时，若变量紧跟英文冒号（如 `"$bid is $bst: $msg"`），解析器会将 `$bst:` 误作为变量驱动器作用域（类似 `$env:`）而报语法解析错误；必须写成 `"$($bst):"` 或 `"${bst}:"`。
+- 解析额度重置时间（如 `try again at 4:28 AM`）时，需按本地时间对比，若时间未到提前发起请求会导致重复触发配额暂停。

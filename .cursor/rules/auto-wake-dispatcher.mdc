@@ -1,0 +1,30 @@
+﻿---
+description: 调度器自动唤醒器（Auto-Wake）配置与运行规则；监控 state.json、额度等待恢复与自动巡检。
+globs: "scripts/*AutoWake*.ps1"
+alwaysApply: false
+---
+
+# 调度器自动唤醒器规则
+
+本规则规范 supervisor 调度工作区中自动唤醒机制（Auto-Wake）的创建、配置、触发与故障诊断流程。
+
+## 适用场景
+1. 主调度器因模型额度耗尽暂停（`PAUSED_QUOTA`），需在重置时间窗口到达后自动唤醒恢复开发。
+2. 调度执行中因编译错误、独立测试未通过（`NEEDS_FIX` / `BLOCKED`）导致中断，需自动巡检并提取结构化诊断建议。
+3. 批次全量执行完成（`ALL_DONE`）或活跃进程状态监控。
+
+## 执行协议与工具链
+
+1. **巡检分析核心**：
+   - 统一入口：`scripts/Invoke-AutoWakeSupervisor.ps1`。
+   - 读取最新或指定 `state.json` 与 `progress.log`，输出结构化状态对象：`ACTIVE_RUNNING`、`WAITING_QUOTA`、`READY_TO_RESUME`、`RESUMED`、`ACTION_REQUIRED`、`ALL_DONE`。
+2. **结合 Antigravity 原生唤醒**：
+   - **时间窗口等待**：当状态为 `WAITING_QUOTA` 时，提取 `RemainingSeconds`，通过 Antigravity IDE `schedule` 工具注册单次定时器（`DurationSeconds`），到点自动唤醒 Agent 上下文。
+   - **进程终态捕获**：调度器后台运行时，利用 IDE 原生任务生命周期系统（Reactive Wakeup），进程退出时自动接收结果通知。
+3. **恢复触发门禁**：
+   - 额度重置时间未到前，严禁调用 `-ResumeAfterQuota` 或触发任何重试。
+   - 只有状态返回 `READY_TO_RESUME`，或用户明确授权额度已充值后，才允许执行 `-Action ResumeIfReady`。
+
+## 约束与红线
+- **严禁无限制自愈**：同一张 Ticket 的自动诊断与修复若连续失败超过 2 次，必须停止并上报人工，严禁 Agent 与子 CLI 无限死循环互修。
+- **状态单向真实**：不伪造完成状态，不可在未通过独立验收时篡改 `state.json`。
