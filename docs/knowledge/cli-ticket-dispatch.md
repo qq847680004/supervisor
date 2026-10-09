@@ -52,11 +52,11 @@
    <CLI 原生 Skill 入口：Codex=$implement；Cursor/Antigravity=/implement>
    仅开发当前 Ticket：<ID>，文件：<绝对 ticket.md 路径>
    目标仓库根目录：<绝对目标根>；任务清单：<绝对 tasks.md 路径>
-   先确认工作区并加载目标项目根 AGENTS.md、适用规则、经验索引与命中的 SEC、Ticket Spec 锚点。
-   按该 CLI 已确认的原生 Skill 执行开发、必要的 TDD 测试与逐项验收。
-   只修改当前 Ticket 授权范围；遵守目标项目 Git/安全/提交规则，禁止自动 push，未经目标项目允许不提交。
-   返回真实变更文件、测试命令及结果、尚未完成的 TC、阻塞原因；不得假勾选。
-   不得继续下发其它 Ticket、调用其它 CLI 或创建子代理。
+   【强制遵守项目规则】：必须强制严格遵守目标项目根目录 AGENTS.md 进行开发：
+   1. 全局强制规则（Always Apply）必须首先强制加载并无条件严格遵守；
+   2. 领域按需规则（Rules Index）严格按照路径/代码特征与触发动词按需读取对应 .cursor/rules/*.mdc；
+   3. 精准读取当前 Ticket 的 docs/specs 锚点（SEC-）并执行 implement/SKILL.md 标准流程。
+   【开发与回写规范】：严格采用 TDD 流程交付业务代码与单测，确保本地测试通过；本地测试通过后仅允许将当前 Ticket 内对应 - [x] **TC-* 与 tasks.md 对应行回写为 [x]；回写时强制使用 UTF-8（无 BOM）保存，严禁破坏中文或写成乱码；严禁篡改任何 Spec 契约、Ticket 业务需求或 tasks.md 其他内容；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。
    ~~~
 
 4. `implement` 是共同开发意图，但**实际入口按 CLI 分开构造**：Codex 首行 `$implement`，Cursor/Antigravity 首行 `/implement`（如果该版本已确认具备原生 Slash 入口），后续正文再写目标路径、规则、Ticket 与测试要求。不能把 `$implement /implement` 拼在同一行当作通用命令。**直接启动正式 Ticket 会话并在本次结构化结果里核对实际规则/Skill/代码/测试**；失败保留该 Ticket 会话处理，不每张另开探针。

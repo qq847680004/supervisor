@@ -414,14 +414,15 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  $promptPath=Join-Path $dir 'prompt.txt'
  if($continuing){
   $prompt='$implement' + [Environment]::NewLine +
-    "只继续原 Ticket $($Ticket.ID)，路径 $($Ticket.TicketPath)。上一轮验收不通过：$($Record.Reason)。" + [Environment]::NewLine +
-    "在 $($Ticket.Root) 复读 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 和 Spec 锚点，修复未通过 TC 并实际运行测试；TDD 测试通过后仅允许回写 Ticket TC 与 tasks.md 为 [x]；回写必须使用 UTF-8（无 BOM）保存，严禁破坏中文或写成乱码；严禁修改任何需求契约；不启动其它 CLI/Agent，不自动 push。"
+    "只继续原 Ticket $($Ticket.ID)，路径 $($Ticket.TicketPath)。上一轮验收未通过：$($Record.Reason)。" + [Environment]::NewLine +
+    "【强制遵守项目规则】：必须严格遵守目标项目根目录 AGENTS.md：全局强制规则（Always Apply）无条件全量遵守；领域按需规则严格按路径/代码特征与触发动词按需加载对应 .cursor/rules/*.mdc。复读当前 Ticket Spec 锚点与 implement/SKILL.md，针对未通过原因修复业务代码与单元测试并运行测试。" + [Environment]::NewLine +
+    "【开发与回写规范】：完成 TDD 验证后仅允许回写当前 Ticket TC 与 tasks.md 为 [x]；回写强制使用 UTF-8（无 BOM）保存，严禁乱码；严禁修改任何需求契约；不启动其它 CLI/Agent，不自动 push。"
   $arguments=@('exec','resume','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),$Record.SessionId,'-')
  }else{
   $prompt='$implement' + [Environment]::NewLine +
     "仅开发当前 Ticket $($Ticket.ID)：$($Ticket.TicketPath)。目标仓根目录：$($Ticket.Root)。任务清单：$($Ticket.TasksPath)。" + [Environment]::NewLine +
-    "先读本仓 AGENTS.md、personal-contract-readonly.mdc 规则、implement/SKILL.md 及当前 Ticket Spec 锚点，按目标规则实现交付、TC 与测试。" + [Environment]::NewLine +
-    "开发与回写规范：完成 /implement 的 TDD 本地单测验证后，仅允许将当前 Ticket 内对应 - [x] **TC-* 与 tasks.md 对应行回写为 [x]；回写时强制使用 UTF-8（无 BOM）读写保存，严禁破坏中文或写成乱码；严禁修改任何 Spec 契约、Ticket 业务需求或 tasks.md 其他内容；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。"
+    "【强制遵守项目规则】：必须强制严格遵守目标项目根目录 AGENTS.md 进行开发：1. 全局强制规则（Always Apply）必须首先强制加载并无条件严格遵守；2. 领域按需规则（Rules Index）严格按照路径/代码特征与触发动词按需读取对应 .cursor/rules/*.mdc；3. 精准读取当前 Ticket 的 docs/specs 锚点（SEC-）并执行 implement/SKILL.md 标准流程。" + [Environment]::NewLine +
+    "【开发与回写规范】：严格采用 TDD 流程交付业务代码与单测，确保本地测试通过；本地测试通过后仅允许将当前 Ticket 内对应 - [x] **TC-* 与 tasks.md 对应行回写为 [x]；回写时强制使用 UTF-8（无 BOM）保存，严禁破坏中文或写成乱码；严禁篡改任何 Spec 契约、Ticket 业务需求或 tasks.md 其他内容；不得扩大目标模块，不调度其它 Ticket/CLI/Agent，不绕过权限，不自动 push。"
   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),'-')
  }
  [IO.File]::WriteAllText($promptPath,$prompt,(New-Object Text.UTF8Encoding($false)))
