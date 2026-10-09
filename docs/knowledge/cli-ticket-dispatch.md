@@ -218,3 +218,27 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
 - 临时命令未指定 UTF-8 编码或缺少项目红线约束，导致临时命令本身再次生成乱码或破坏 Markdown 契约。
 - 临时命令执行完后没有重新盘点工作区状态就盲目新建会话，破坏了同 Ticket 续接约束。
 
+## SEC-DISPATCH-10 验收测试防静默放行与前置校验防击穿门禁
+
+### 适用
+- 编写、配置或执行 Ticket 独立验收测试脚本（如 `Test-GovernanceTicket.ps1`）、验收清单（`acceptance-manifest.json`）及主调度器前置校验（Pre-dispatch verification）；
+- 防止因构建工具缺少测试用例时返回退出码 0、模糊通配符匹配历史无关测试、或空交付物定义导致未开发任务被误判为完成（假冒完成）。
+
+### 步骤
+1. **测试脚本严格禁止静默放行参数**：
+   - 多模块 Maven 测试脚本中，严禁添加 `-DfailIfNoTests=false` 或 `-Dsurefire.failIfNoSpecifiedTests=false`；必须让缺失测试用例时直接触发 `BUILD FAILURE` 并返回非零退出码（如退出码 1）；
+   - 在多模块工程中，直接指定包含业务与单测的子模块 `pom.xml`（如 `-f .../biz/pom.xml`）执行测试，或在运行前完成本地安装（`install -DskipTests`），防止无测试的子模块干扰。
+2. **测试类模式精准单向映射**：
+   - 严禁使用过于宽泛的通配符（如 `*Policy*`、`*Audit*`、`*Metadata*`），防止错误匹配到前序 Ticket 或历史遗留模块的测试；
+   - 必须使用 Ticket 独占的精确测试类全名或高特异性前缀（如 `DataIsolationPolicyServiceTest`、`*PolicyLifecycle*`、`*GovernanceAudit*`）。
+3. **真实交付物多重约束**：
+   - `acceptance-manifest.json` 中的 `deliverables` 严禁仅填写 Ticket 自身的 markdown 文件；必须将预期的 Java 业务类、Mapper/Service 或 SQL 文件作为交付物强校验项。
+4. **开工前前置校验防御性设计**：
+   - 调度器在下发任务前执行前置校验时，必须基于上述高强度测试脚本与真实交付物；若测试脚本报错退出或交付物缺失，坚决禁止自动回写 `[x]` 或标记 `DONE`，确保未开发任务按正常流程启动新会话或原会话开发。
+
+### 坑
+- Maven Surefire 默认在根 pom 执行定向单测时，若前面的子模块没有对应测试类，不加 `-Dsurefire.failIfNoSpecifiedTests=false` 会在第一个子模块报错；如果盲目在全局加了该参数，又会导致后面真正的业务模块即便 0 测试也静默成功返回退出码 0。最佳实践是定向到真正的业务子模块 `biz/pom.xml` 运行测试。
+- 验收清单 `deliverables` 仅填 markdown，因任务生成时 markdown 就存在，导致交付物检查失去所有防御价值。
+- 开工前前置校验在没有执行过任何 CLI 会话（`Attempts == 0`）时，若测试脚本存在漏洞，会误判为“外部已完成”，造成整批任务瞬间被全部刷成完成并打勾。
+
+

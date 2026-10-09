@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$TicketId,
@@ -29,6 +29,12 @@ if (-not (Test-Path -LiteralPath $pom)) {
   exit 1
 }
 
+$bizPom = Join-Path $Root 'dlplatform\dlplatform-ai-data\dlplatform-ai-data-biz\pom.xml'
+if (-not (Test-Path -LiteralPath $bizPom)) {
+  Write-Error "Biz POM not found: $bizPom"
+  exit 1
+}
+
 # 1. 验证整个 AI Data 模块编译
 Write-Host "Verifying compilation via $mvnPath..."
 & $mvnPath -f $pom -DskipTests compile
@@ -37,22 +43,21 @@ if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
-# 2. 定向运行当前 Ticket 的验收测试，隔离历史无关测试
-$testPattern = switch -Wildcard ($TicketId) {
-  'T-GOV-001' { '*RuntimeConfig*' }
-  'T-GOV-002' { '*Registry*' }
-  'T-GOV-003' { '*Metadata*' }
-  'T-GOV-004' { '*ApiKey*' }
-  'T-GOV-005' { '*DataIsolationPolicy*' }
-  'T-GOV-006' { '*Policy*' }
-  'T-GOV-007' { '*PlatformScope*' }
-  'T-GOV-008' { '*ExternalScope*' }
-  'T-GOV-009' { '*Audit*' }
-  Default { '*Governance*' }
+$patternMap = @{
+  'T-GOV-001' = 'RuntimeConfigValueValidatorTest'
+  'T-GOV-002' = 'McpRegistryServiceTest'
+  'T-GOV-003' = '*MetadataBrowser*'
+  'T-GOV-004' = 'McpApiKeyServiceTest'
+  'T-GOV-005' = 'DataIsolationPolicyServiceTest'
+  'T-GOV-006' = '*PolicyLifecycle*'
+  'T-GOV-007' = '*PlatformScope*'
+  'T-GOV-008' = '*ExternalScope*'
+  'T-GOV-009' = '*GovernanceAudit*'
 }
+$testPattern = if ($patternMap.ContainsKey($TicketId)) { $patternMap[$TicketId] } else { '*Governance*' }
 
 Write-Host "Running targeted test for $TicketId ($testPattern)..."
-& $mvnPath -f $pom "-Dtest=$testPattern" "-Dsurefire.failIfNoSpecifiedTests=false" "-DfailIfNoTests=false" test
+& $mvnPath -f $bizPom "-Dtest=$testPattern" test
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Targeted test failed for $TicketId with exit code $LASTEXITCODE"
   exit $LASTEXITCODE

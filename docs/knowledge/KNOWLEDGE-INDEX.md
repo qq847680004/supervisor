@@ -16,6 +16,7 @@ Sections:
 - SEC-DISPATCH-07 默认开发模型与 High 档位覆盖
 - SEC-DISPATCH-08 自动唤醒器与巡检自愈
 - SEC-DISPATCH-09 用户即时命令下发与抢占插队响应
+- SEC-DISPATCH-10 验收测试防静默放行与前置校验防击穿门禁
 
 ## KNOW-CODEX-00 Codex Exec 独立 Ticket 会话
 Path:
