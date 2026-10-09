@@ -1,4 +1,4 @@
-﻿# 独立 CLI Ticket 顺序调度与验收闭环
+# 独立 CLI Ticket 顺序调度与验收闭环
 
 ## SEC-DISPATCH-00 Supervisor 调度边界与共用约束
 
@@ -179,8 +179,9 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
 2. **结合 Antigravity 原生唤醒**：
    - 额度等待：检测到 `WAITING_QUOTA` 时，取返回的 `RemainingSeconds`，使用 Antigravity IDE `schedule` 工具注册单次唤醒定时器（`DurationSeconds`），到点自动唤醒 Agent 上下文，无需死循环轮询。
    - 终态通知：后台进程退出时，IDE 原生 Reactive Wakeup 会自动向 Agent 发送通知事件，触发 Agent 执行巡检与决策。
-3. **安全自愈红线**：
-   - 同一 Ticket 失败自愈尝试不能超过 2 次；连续失败必须停止并生成报告转人工决策。
+3. **安全自愈红线与转人工分流**：
+   - **约定流程自主解决**：若唤醒后发现的问题属于本仓 `AGENTS.md`、`KNOWLEDGE-INDEX.md` 及四份经验库已覆盖的约定流程（如参数引号转义、编码乱码修复、tasks.md 补标、同会话 resume、额度到期续接等），由 Agent 自主排查修复并继续调度。
+   - **非约定流程或超限转人工**：若不属于已有经验约定流程，或针对同一 Ticket/同一场景自动排障自愈尝试达 2 次上限（Max Self-Healing Attempts = 2）仍未解决，严禁无限循环盲目重试，必须立即停止调度并向用户报告真实受阻 Ticket、现场日志与自愈失败原因，转入人工处理流程。
    - 额度重置窗口未过时严禁提前唤醒或重试。
 
 ### 坑

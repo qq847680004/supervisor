@@ -1,4 +1,4 @@
-﻿---
+---
 description: 调度器自动唤醒器（Auto-Wake）配置与运行规则；监控 state.json、额度等待恢复与自动巡检。
 globs: "scripts/*AutoWake*.ps1"
 alwaysApply: false
@@ -26,5 +26,7 @@ alwaysApply: false
    - 只有状态返回 `READY_TO_RESUME`，或用户明确授权额度已充值后，才允许执行 `-Action ResumeIfReady`。
 
 ## 约束与红线
-- **严禁无限制自愈**：同一张 Ticket 的自动诊断与修复若连续失败超过 2 次，必须停止并上报人工，严禁 Agent 与子 CLI 无限死循环互修。
+- **分流处置机制**：
+  - **约定流程自主解决**：唤醒后若属于本仓 `AGENTS.md`、`KNOWLEDGE-INDEX.md` 与经验库已覆盖的约定流程（如参数引号、编码/乱码修复、tasks.md 回写补齐、同会话 resume、额度重置到期续接等），Agent 自行排查修复并继续调度。
+  - **非约定流程或超限转人工**：若不属于已有经验约定流程，或同一 Ticket/同一场景自动排障自愈尝试达 2 次上限（Max Self-Healing Attempts = 2）仍未解决，严禁无限循环重试，必须立即停止并向用户报告真实受阻 Ticket、现场日志与自愈失败原因，转入人工处理流程。
 - **状态单向真实**：不伪造完成状态，不可在未通过独立验收时篡改 `state.json`。
