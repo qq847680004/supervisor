@@ -8,7 +8,9 @@ param(
  [string]$CodexPath='codex.cmd',
  [string]$Model='gpt-6.1-sol',
  [ValidateSet('low','medium','high','xhigh')][string]$Effort='medium',
- [ValidateRange(1,10)][int]$MaxAttemptsPerTicket=3,
+ [ValidateRange(1,100)][int]$MaxAttemptsPerTicket=10,
+ [ValidateRange(1,200)][int]$MaxCapacityRetries=50,
+ [ValidateRange(1,20)][int]$CapacityRotateThreshold=3,
  [ValidateRange(0,86400)][int]$ProcessTimeoutSeconds=0,
  [switch]$DryRun,
  [switch]$RetryBlocked,
@@ -31,6 +33,25 @@ $script:RuntimeFile=$null
 $script:State=$null
 $script:Manifest=$null
 $script:ProgressPath=$null
+
+$script:ModelRotationPool = @(
+ 'gpt-6.1-sol',
+ 'gpt-6-sol',
+ 'gpt-5.6-sol',
+ 'gpt-5.6-terra'
+)
+$script:TargetEffort = if ($Effort -eq 'high') { 'high' } else { 'medium' }
+
+function Next-Rotated-Model([string]$CurrentModel) {
+ $cur = if($CurrentModel){ $CurrentModel.ToLowerInvariant().Trim() } else { $script:ModelRotationPool[0] }
+ $idx = [array]::IndexOf($script:ModelRotationPool, $cur)
+ if($idx -lt 0) {
+  return $script:ModelRotationPool[0]
+ }
+ $nextIdx = ($idx + 1) % $script:ModelRotationPool.Count
+ return $script:ModelRotationPool[$nextIdx]
+}
+
 function Resolve-Exact([string]$Path) {
  if(-not [IO.Path]::IsPathRooted($Path)){throw "Absolute path required: $Path"}
  return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
@@ -239,6 +260,23 @@ function Test-QuotaExhausted([object]$Attempt) {
  }
  return $false
 }
+function Test-ModelCapacity([object]$Attempt) {
+ $pattern='(?i)(selected\s+model\s+is\s+at\s+capacity|model\s+is\s+at\s+capacity|is\s+at\s+capacity\.\s*please\s+try\s+a\s+different\s+model)'
+ foreach($line in @(Read-LinesShared $Attempt.Stderr)) {
+  if($line -match $pattern){return $true}
+ }
+ foreach($line in @(Read-LinesShared $Attempt.Stdout)) {
+  try{
+   $ev=$line | ConvertFrom-Json -ErrorAction Stop
+   if($ev.type -eq 'error' -or $ev.type -eq 'turn.failed') {
+    if(($ev | ConvertTo-Json -Depth 15 -Compress) -match $pattern){return $true}
+   }
+  }catch{
+   if($line -match $pattern){return $true}
+  }
+ }
+ return $false
+}
 function Process-Live([object]$Record){
  if(-not $Record.Pid -or -not $Record.ProcessStartedUtc){return $false}
  $p=Get-Process -Id ([int]$Record.Pid) -ErrorAction SilentlyContinue
@@ -277,6 +315,30 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
   Write-DispatchProgress 'PAUSED_QUOTA' $Record.ID ("模型额度已用完，开发已暂停；CLI=Codex；模型=$($Attempt.Model) / $($Attempt.Effort)；Session=$($Record.SessionId)；stderr=$($Attempt.Stderr)；JSONL=$($Attempt.Stdout)；不自动重试或切换模型")
   return $true
  }
+ if(Test-ModelCapacity $Attempt){
+  $Attempt | Add-Member -NotePropertyName IsCapacity -NotePropertyValue $true -Force
+  if($null -eq $Record.PSObject.Properties['ConsecutiveCapacityErrors']){$Record | Add-Member -NotePropertyName ConsecutiveCapacityErrors -NotePropertyValue 0}
+  $Record.ConsecutiveCapacityErrors = [int]$Record.ConsecutiveCapacityErrors + 1
+  $activeModel = if($Record.CurrentModel){ [string]$Record.CurrentModel } else { $Model }
+
+  if([int]$Record.ConsecutiveCapacityErrors -ge $CapacityRotateThreshold){
+   $nextModel = Next-Rotated-Model $activeModel
+   Write-DispatchProgress 'ROTATE_MODEL' $Record.ID ("模型 $activeModel 连续达到 $CapacityRotateThreshold 次 capacity 报错，自动轮换至 $nextModel / $script:TargetEffort")
+   $Record.CurrentModel = $nextModel
+   $Record.ConsecutiveCapacityErrors = 0
+  }
+
+  $Record.State='NEEDS_FIX'
+  $capCount=@($Record.Attempts | Where-Object {$null -ne $_.PSObject.Properties['IsCapacity'] -and $_.IsCapacity}).Count
+  $Record.Reason="Selected model is at capacity (retry $capCount/$MaxCapacityRetries)"
+  Save-State
+  $delay = Get-Random -Minimum 2 -Maximum 9
+  Write-DispatchProgress 'CAPACITY_RETRY' $Record.ID ("检测到模型 capacity 报错；第 $capCount/$MaxCapacityRetries 次；当前模型=$($Record.CurrentModel) / $script:TargetEffort；随机退避 $delay 秒后重试...")
+  Start-Sleep -Seconds $delay
+  return $true
+ }
+ $Attempt | Add-Member -NotePropertyName IsCapacity -NotePropertyValue $false -Force
+ if($null -ne $Record.PSObject.Properties['ConsecutiveCapacityErrors']){$Record.ConsecutiveCapacityErrors = 0}
  $Record.State='NEEDS_FIX'
  Write-DispatchProgress 'VERIFY' $Record.ID ("CLI 进程已退出，真实退出码=$($Attempt.ExitCode)；开始独立检查")
  $Record.Reason=if($null -eq $Attempt.ExitCode){'Missing process exit receipt'}elseif($Attempt.ExitCode -ne 0){"CLI exit code $($Attempt.ExitCode)"}else{'Needs independent acceptance'}
@@ -400,40 +462,57 @@ function Verify-Ticket([object]$Ticket,[object]$Record,[switch]$WithCodexProof){
 }
 function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  $continuing=[bool]$Record.SessionId
- if(@($Record.Attempts).Count -ge $MaxAttemptsPerTicket){
-  $Record.State='BLOCKED';$Record.Reason='Attempt limit reached; inspect original session and logs'
+ if($null -eq $Record.PSObject.Properties['CurrentModel'] -or -not $Record.CurrentModel){
+  $Record | Add-Member -NotePropertyName CurrentModel -NotePropertyValue $Model -Force
+ }
+ if($null -eq $Record.PSObject.Properties['ConsecutiveCapacityErrors']){
+  $Record | Add-Member -NotePropertyName ConsecutiveCapacityErrors -NotePropertyValue 0 -Force
+ }
+ $capCount=@($Record.Attempts | Where-Object {$null -ne $_.PSObject.Properties['IsCapacity'] -and $_.IsCapacity}).Count
+ $nonCapCount=@($Record.Attempts | Where-Object {$null -eq $_.PSObject.Properties['IsCapacity'] -or -not $_.IsCapacity}).Count
+
+ if($capCount -ge $MaxCapacityRetries){
+  $Record.State='BLOCKED';$Record.Reason="Capacity retry limit ($MaxCapacityRetries) reached; service remains at capacity"
   Save-State;return
  }
- if(@($Record.Attempts).Count -gt 0 -and -not $continuing){
+ if($nonCapCount -ge $MaxAttemptsPerTicket){
+  $Record.State='BLOCKED';$Record.Reason="Attempt limit ($MaxAttemptsPerTicket) reached for non-capacity errors; inspect original session and logs"
+  Save-State;return
+ }
+ $lastAttempt = if(@($Record.Attempts).Count -gt 0){ @($Record.Attempts)[-1] } else { $null }
+ $lastWasCapacity = ($null -ne $lastAttempt -and $null -ne $lastAttempt.PSObject.Properties['IsCapacity'] -and $lastAttempt.IsCapacity)
+ if(@($Record.Attempts).Count -gt 0 -and -not $continuing -and -not $lastWasCapacity){
   $Record.State='BLOCKED';$Record.Reason='Previous launch has no recoverable thread ID; manual recovery required'
   Save-State;return
  }
  $n=@($Record.Attempts).Count+1
+ $activeModel=[string]$Record.CurrentModel
+ $activeEffort=$script:TargetEffort
  $dir=Join-Path $script:BatchDir ('attempt-'+(SHA $Ticket.Key).Substring(0,16)+'-'+$n)
  [void](New-Item -ItemType Directory -Path $dir -Force)
  $promptPath=Join-Path $dir 'prompt.txt'
   if($continuing){
    $prompt='$implement ' + $Ticket.TicketPath + [Environment]::NewLine + '上一轮验收未通过：' + $($Record.Reason) + '。请继续按照 TDD 流程完善代码与单测。'
-   $arguments=@('exec','resume','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),$Record.SessionId,'-')
+   $arguments=@('exec','resume','--json','-m',$activeModel,'-c',('model_reasoning_effort="'+$activeEffort+'"'),$Record.SessionId,'-')
   }else{
    $prompt='$implement ' + $Ticket.TicketPath
-   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$Model,'-c',('model_reasoning_effort="'+$Effort+'"'),'-')
+   $arguments=@('exec','-C',$Ticket.Root,'--sandbox','workspace-write','--json','-m',$activeModel,'-c',('model_reasoning_effort="'+$activeEffort+'"'),'-')
   }
  [IO.File]::WriteAllText($promptPath,$prompt,(New-Object Text.UTF8Encoding($false)))
- $attempt=[pscustomobject]@{Index=$n;StartedUtc=[datetime]::UtcNow.ToString('o');Model=$Model;Effort=$Effort;Mode=$(if($continuing){'resume'}else{'new'});Stdout=(Join-Path $dir 'codex.jsonl');Stderr=(Join-Path $dir 'codex.stderr');ExitFile=(Join-Path $dir 'exit.txt');ExitCode=$null;PromptPath=$promptPath}
+ $attempt=[pscustomobject]@{Index=$n;StartedUtc=[datetime]::UtcNow.ToString('o');Model=$activeModel;Effort=$activeEffort;Mode=$(if($continuing){'resume'}else{'new'});Stdout=(Join-Path $dir 'codex.jsonl');Stderr=(Join-Path $dir 'codex.stderr');ExitFile=(Join-Path $dir 'exit.txt');ExitCode=$null;PromptPath=$promptPath}
  $attempt | Add-Member -NotePropertyName GitBefore -NotePropertyValue (Join-Path $dir 'git-before.txt')
  $attempt | Add-Member -NotePropertyName GitAfter -NotePropertyValue (Join-Path $dir 'git-after.txt')
  [IO.File]::WriteAllLines($attempt.GitBefore,@(& git -C $Ticket.Root status --porcelain=v1 --untracked-files=all))
  $previousReason=$Record.Reason
  $Record.Attempts=@($Record.Attempts)+@($attempt)
  $Record.State='STARTING';$Record.Reason='Written before process launch';Save-State
- Write-DispatchProgress 'STARTING' $Ticket.ID ("任务文件=$($Ticket.TicketPath)；模块=$($Ticket.Module)；目标仓=$($Ticket.Root)；CLI=Codex；模型=$Model / $Effort；会话模式=$($attempt.Mode)；上次原因=$previousReason；尝试=$n/$MaxAttemptsPerTicket；日志=$($attempt.Stdout)")
+ Write-DispatchProgress 'STARTING' $Ticket.ID ("任务文件=$($Ticket.TicketPath)；模块=$($Ticket.Module)；目标仓=$($Ticket.Root)；CLI=Codex；模型=$activeModel / $activeEffort；会话模式=$($attempt.Mode)；上次原因=$previousReason；尝试=$n；日志=$($attempt.Stdout)")
  try{
   $proc=Launch-Command $ResolvedCodex $arguments $Ticket.Root $promptPath $attempt.Stdout $attempt.Stderr $attempt.ExitFile
   $Record.Pid=$proc.Id
   $Record.ProcessStartedUtc=$proc.StartTime.ToUniversalTime().ToString('o')
   $Record.State='RUNNING';$Record.Reason='';Save-State
-  Write-DispatchProgress 'RUNNING' $Ticket.ID ("已启动独立 Codex 进程 PID=$($proc.Id)；模型=$Model / $Effort；等待 thread.started；日志=$($attempt.Stdout)")
+  Write-DispatchProgress 'RUNNING' $Ticket.ID ("已启动独立 Codex 进程 PID=$($proc.Id)；模型=$activeModel / $activeEffort；等待 thread.started；日志=$($attempt.Stdout)")
   if(-not (Wait-For-Attempt $Record $attempt)){return}
  }catch{
   # STARTING without PID is ambiguous: do not issue another new session.

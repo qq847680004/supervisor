@@ -49,12 +49,20 @@
 - **额度暂停绝不自动重试、切换模型/档位/CLI/账号、启动下一 Ticket，或按恢复时间自动继续**。同参数重复启动会保持暂停，单独的 `-RetryBlocked` 也不能解除额度暂停。
 - 用户明确确认额度已恢复、授权继续后，才在原批次命令尾部追加 `-ResumeAfterQuota`；有原 Session ID 且确认旧进程终止时继续原会话。没有 Session ID 则持续暂停并要求人工检查原日志，不擅自开新会话。若额度尚未恢复，下一次实际 CLI 又报额度耗尽，会再次暂停。
 
+## 模型容量受限（at capacity）退避重试与模型轮换机制
+
+- 当 Codex 输出 `Selected model is at capacity. Please try a different model`（或 stderr/JSONL 中出现模型 capacity 过载限制）时：
+  1. **随机退避重试**：调度器捕获该错误后，随机等待 2~8 秒（`Get-Random -Minimum 2 -Maximum 9`），然后自动重试继续未完成的任务；若已有 SessionId 则原会话 `resume`，若建联前即过载则允许重新建立会话；
+  2. **重试次数上限**：针对 capacity 场景的重试上限单独提升至 **50 次**（`-MaxCapacityRetries 50`）；非 capacity 的普通中断/失败上限默认设置为 **10 次**（`-MaxAttemptsPerTicket 10`）；
+  3. **模型轮换机制**：若同一模型连续遇到 3 次 capacity 报错（`-CapacityRotateThreshold 3`），调度器自动轮换到候选池的下一个模型，候选池依次为：`gpt-6.1-sol` $\rightarrow$ `gpt-6-sol` $\rightarrow$ `gpt-5.6-sol` $\rightarrow$ `gpt-5.6-terra`；
+  4. **推理档位继承**：若当前批次启动时指定为 High 档位（`-Effort high`），轮换后的模型保持 High 推理档位；其他情况默认 Medium 档位。
+
 ## 运行与恢复
 
 - 前置校验：仅解析显式指定的 tasks.md，不递归扫描其它模块；从 Git 定位目标根和 AGENTS.md；比对任务行与 Ticket 的 Blocked by ID 集合，拒绝重复/循环/路径越界。
 - 只有前置依赖在选定范围内、已独立验收为 DONE 才放行；选定范围外的依赖默认阻塞，不自动扩权扫描。
 - 每张 Ticket 首次用 codex exec -C <目标根> --sandbox workspace-write --json 开新 session；失败时只有捕获正确的 thread_id 才允许 codex exec resume 原会话。
-- 默认最多 3 次尝试；无会话 ID、进程下落不明、环境权限不足、测试不通过且次数耗尽、模型/工具失败，均阻塞。阻塞不等于 DONE。
+- 普通错误默认最多 10 次尝试（capacity 场景最多 50 次重试）；无会话 ID（非 capacity 异常）、进程下落不明、环境权限不足、测试不通过且次数耗尽、模型/工具失败，均阻塞。阻塞不等于 DONE。
 - 强制检查 tasks.md 的 [x]、Ticket 每项 TC-* [x]、交付文件存在、Codex JSONL 的实际 AGENTS/implement/SKILL.md 读取命令证据和真实终态，以及独立测试的进程退出码与原始 stdout/stderr。
 - 使用单实例文件锁；在启动之前保存 STARTING，记录 PID/创建时间/session ID、JSONL、stderr、Git status 前后快照和退出收据，原子写入 state.json 并保留 state.json.bak。
 - 批次路径默认为 .supervisor-runtime/<scope-hash>（Git 忽略）。同范围重复执行会读取原状态和日志；用户说“High 模型”时由 Supervisor 将内部执行档位切到 High，沿用同一批次和会话，只影响下一次尚未开始的 CLI 调用（外部 PowerShell 脚本本身不会读取 ChatGPT 消息）。范围或验收文件路径改变时将产生新批次，不覆盖旧状态；如已有同一 Ticket 开发会话，会阻止跨批次重复派发。
@@ -62,8 +70,9 @@
 - 未经用户授权，不自动 git commit/push。执行器没有权限保证、CLI 规则/Skill 缺失时不放行。
 - 日志含原始 CLI 输出，可能包含敏感数据，应限制机器访问权限，严禁提交或共享原始日志。gitignore 防止普通 Git 添加，但不替代文件权限保护。
 
-退出码：0=ALL_DONE，2=有 BLOCKED/PARTIAL，1=前置校验或运行错误。测试使用纯本地假 Codex，不会向真实模型发 Ticket：
+退出码：0=ALL_DONE，2=有 BLOCKED/PARTIAL，1=前置校验或运行错误，3=PAUSED_QUOTA。测试使用纯本地假 Codex，不会向真实模型发 Ticket：
 
     powershell.exe -NoProfile -File .\tests\Smoke-Dispatcher.ps1
+    powershell.exe -NoProfile -File .\tests\Test-DispatcherCapacity.ps1
 
-当前回归覆盖两张 Ticket 顺序、失败后原会话续接、不同 session、独立测试、重启不重复下发、循环依赖。模拟事件用于测试调度器自身，不能当成真实 Codex 开发/沙盒成功的证据。
+当前回归覆盖两张 Ticket 顺序、失败后原会话续接、不同 session、独立测试、重启不重复下发、循环依赖、模型 capacity 退避重试与自动轮换。模拟事件用于测试调度器自身，不能当成真实 Codex 开发/沙盒成功的证据。

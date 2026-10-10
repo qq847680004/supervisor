@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference='Stop'
+$ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $driver=Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\Invoke-CodexTicketDispatcher.ps1'
 $base=Join-Path $env:TEMP ('ticket-smoke-'+[guid]::NewGuid().ToString('N'))
@@ -20,7 +20,7 @@ try {
  [IO.File]::WriteAllText($mock,'
  $msg=[Console]::In.ReadToEnd()
  $root=$env:SUP_TEST_REPO
- $n=if($msg -match "T-DEMO-002"){"002"}else{"001"}
+ $n=if($msg -match "002"){"002"}else{"001"}
  $id="T-DEMO-"+$n
  $counter=Join-Path $root ("count-"+$n)
  $count=if(Test-Path $counter){[int][IO.File]::ReadAllText($counter)}else{0}
