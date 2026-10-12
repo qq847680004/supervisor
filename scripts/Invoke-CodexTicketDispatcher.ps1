@@ -332,7 +332,7 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
   $capCount=@($Record.Attempts | Where-Object {$null -ne $_.PSObject.Properties['IsCapacity'] -and $_.IsCapacity}).Count
   $Record.Reason="Selected model is at capacity (retry $capCount/$MaxCapacityRetries)"
   Save-State
-  $delay = Get-Random -Minimum 2 -Maximum 9
+  $delay = Get-Random -Minimum 2 -Maximum 7
   Write-DispatchProgress 'CAPACITY_RETRY' $Record.ID ("检测到模型 capacity 报错；第 $capCount/$MaxCapacityRetries 次；当前模型=$($Record.CurrentModel) / $script:TargetEffort；随机退避 $delay 秒后重试...")
   Start-Sleep -Seconds $delay
   return $true
