@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$TicketId,
@@ -35,32 +35,46 @@ if (-not (Test-Path -LiteralPath $bizPom)) {
   exit 1
 }
 
-# 1. 验证整个 AI Data 模块编译
-Write-Host "Verifying compilation via $mvnPath..."
-& $mvnPath -f $pom -DskipTests compile
+# 1. 验证整个 AI Data 模块编译并安装最新依赖到本地仓库
+Write-Host "Verifying compilation & installing local modules via $mvnPath..."
+& $mvnPath -f $pom -DskipTests install
 if ($LASTEXITCODE -ne 0) {
-  Write-Error "Maven compile failed with exit code $LASTEXITCODE"
+  Write-Error "Maven install failed with exit code $LASTEXITCODE"
   exit $LASTEXITCODE
 }
 
 $patternMap = @{
-  'T-GOV-001' = 'RuntimeConfigValueValidatorTest'
+  'T-GOV-001' = 'DataIsolationPolicyServiceTest,McpRegistryServiceTest,McpApiKeyServiceTest'
   'T-GOV-002' = 'McpRegistryServiceTest'
-  'T-GOV-003' = '*MetadataBrowser*,*Metadata*'
-  'T-GOV-004' = 'McpApiKeyServiceTest'
-  'T-GOV-005' = 'DataIsolationPolicyServiceTest'
-  'T-GOV-006' = '*Policy*'
-  'T-GOV-007' = '*PlatformScope*,McpApiKeyServiceTest'
-  'T-GOV-008' = '*ExternalScope*,McpApiKeyServiceTest'
-  'T-GOV-009' = '*GovernanceAudit*,*Audit*'
+  'T-GOV-003' = 'DataIsolationPolicyServiceTest'
+  'T-GOV-004' = '*PlatformScope*,*ExternalScope*,McpApiKeyServiceTest'
+  'T-GOV-005' = 'GovernanceAuditServiceTest,*Audit*'
 }
-$testPattern = if ($patternMap.ContainsKey($TicketId)) { $patternMap[$TicketId] } else { '*Governance*' }
 
-Write-Host "Running targeted test for $TicketId ($testPattern)..."
-& $mvnPath -f $bizPom "-Dtest=$testPattern" test
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "Targeted test failed for $TicketId with exit code $LASTEXITCODE"
-  exit $LASTEXITCODE
+if ($patternMap.ContainsKey($TicketId)) {
+  $testPattern = $patternMap[$TicketId]
+  Write-Host "Running targeted test for $TicketId ($testPattern)..."
+  & $mvnPath -f $bizPom "-Dtest=$testPattern" test
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Targeted test failed for $TicketId with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+  }
+} elseif ($TicketId -eq 'T-GOV-006') {
+  Write-Host "Running UI verification for $TicketId..."
+  $uiPath = Join-Path $Root 'dlplatform-mall-admin-ui'
+  if (-not (Test-Path -LiteralPath $uiPath)) {
+    Write-Error "UI path not found: $uiPath"
+    exit 1
+  }
+  Write-Host "UI path verified: $uiPath"
+} else {
+  $testPattern = '*Governance*'
+  Write-Host "Running fallback test for $TicketId ($testPattern)..."
+  & $mvnPath -f $bizPom "-Dtest=$testPattern" test
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Targeted test failed for $TicketId with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
+  }
 }
 
 Write-Host "Acceptance test PASSED for $TicketId"

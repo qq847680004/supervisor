@@ -132,13 +132,14 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
 ### 步骤
 1. 先恢复用户**本轮明确指定**的所有目标路径与 CLI 选择；无法从用户输入和持久化记录可靠确定时只要求补充缺失信息，不擅自换目标。读取每份当前 `tasks.md` 及必要 Ticket/TC/测试和会话记录，重新构建进度表。
 2. 对每张 Ticket：`DONE` 有效则跳过；`STARTING/RUNNING` 先核查真实进程及会话，禁止重复启动；`NEEDS_FIX` 且原 ID 有效则同 CLI 原会话续接；`NOT_STARTED` 且依赖满足才新建会话；`BLOCKED` 检查是否已解除；`PAUSED_QUOTA` 保持批次暂停、等用户明确授权并确认额度恢复后再续接，不接受普通重试自动解除。**若有启动日志但无会话 ID，先从原始输出与 CLI 历史恢复准确 ID，确认无法恢复则报告阻塞，不能视为未开始重新派发。**
-3. 调度记录至少持久化 `scope/CLI/目标根/Ticket ID/session ID/进程ID/STARTING或终态/失败原因/日志和测试证据路径`，首次进程启动前就记录并在收到会话 ID 时立刻更新；重启时同时检查进程存活、日志和磁盘状态，避免重复启动。范围或执行器变化要明确形成新的调度批次，不覆盖历史会话映射。
+3. 调度记录至少持久化 `scope/CLI/目标根/Ticket ID/session ID/进程ID/STARTING或终态/失败原因/日志和测试证据路径`，首次进程启动前就记录并在收到会话 ID 时立刻更新；重启时同时检查进程存活、日志和磁盘状态，避免重复启动。范围或执行器变化要明确形成新的调度批次，不覆盖历史会话映射。**当重构任务清单启动全新批次时，历史旧批次目录严禁直接存放在 `.supervisor-runtime` 内部，必须移至外部归档目录（如 `.supervisor-runtime-archive/`）；否则调度器扫描时会因检测到跨批次存在同名 Ticket 的历史尝试而报 `Existing Ticket session in different batch` 阻断启动。**
 4. 对已确定可恢复的任务继续执行 `SEC-DISPATCH-02 → 03 → 04`，逐张直到全部验证完成；仅剩不可恢复阻塞时，按 Ticket 汇总错误、依赖链、必须由谁修复及具体恢复动作后停止。
 5. 不允许在目标项目之外乱建 Git worktree，不允许为证明“全部完成”擅自改 `[x]` 或跳过测试；若用户改变目标范围，应重新盘点并重新计算总数。
 
 ### 坑
 - 仅按缓存的“上次做了几张”恢复会漏掉他人修改；必须以磁盘现状和真实验收证据为准。
 - 丢 session ID 后不能假装 `resume` 成功；应说明需先恢复会话映射或经用户明确决定新的修复会话策略。
+- 将重命名备份的旧批次直接留在 `.supervisor-runtime` 内部，会触发跨批次同名 Ticket 碰撞报错导致调度器拒绝启动；必须彻底移到 `.supervisor-runtime-archive`。
 
 ## SEC-DISPATCH-07 默认开发模型与 High 档位覆盖
 
@@ -236,10 +237,25 @@ supervisor 会话中断、CLI 进程消失、用户再次要求继续，或多�
    - 推荐使用逗号分隔的多候选模式（如 `*PlatformScope*,McpApiKeyServiceTest`），只要其中包含有效业务单测即可通过。
 4. **真实交付物多重约束**：
    - `acceptance-manifest.json` 中的 `deliverables` 严禁仅填写 Ticket 自身的 markdown 文件；必须将预期的 Java 业务类、Mapper/Service 或 SQL 文件作为交付物强校验项。
+5. **增量与纠偏类 Ticket 前置校验防击穿特征门禁**：
+   - 当 Ticket 属于对已有业务代码的纠偏（如纠正持久化、清除内存 Map、修复重启一致性），目标模块中往往已存在旧业务代码和旧单测；
+   - 若验收脚本仅运行原有旧单测，旧单测默认全绿，开工前前置独立校验会误判该 Ticket“已开发完成”并静默回写 `[x]`，跳过了本该进行的纠偏开发；
+   - 验收测试脚本必须对纠偏类 Ticket 增加新增交付特性的断言或测试用例特征校验（例如核验测试套件中是否包含 `persist`/`restart`/`multiInstance` 等关键用例或方法）；未包含对应测试时强制返回非零退出码（exit 1），确保前置校验触发 `NEEDS_DEV` 并在 Codex 完成 TDD 开发后才放行。
+6. **多模块 Java 依赖预构建与子模块定向单测**：
+   - 子模块变更后若未在本地 Maven 仓库安装，跨模块单测运行时可能因依赖旧 jar 抛出 `NoSuchMethodError`；在正式执行批次测试前，应先对多模块父 POM 执行一次 `mvn install -DskipTests` 确保本地依赖最新；
+   - 运行定向单测时，严禁直接在包含空测试子模块的父 POM 上传 `-Dtest=...`（会因 `failIfNoSpecifiedTests=true` 报错）；必须指定具体承载测试的业务子模块 POM（如 `-f .../biz/pom.xml`）。
+7. **失败原因提取真实错误文本，避免沙盒越界盲改**：
+   - 受控 CLI 在目标工作区沙盒内运行，无法读取位于外部 `.supervisor-runtime` 目录下的 `stderr` 文件；
+   - 调度器必须直接读取 `stderr` 末尾真实错误摘要拼入续接 Prompt（`上一轮验收未通过：...`），严禁仅传递一个外部绝对文件路径，避免模型因看不到真实断言而无法针对性修复。
 
 ### 坑
 - 在 Prompt 中塞入过多生硬限制与防御条款，模型会因为“怕违规”而不敢重构或修改已有类，退化为只建一个同名单测应试跑通。
 - 测试脚本硬编码过于狭隘的单一通配符，导致模型合规实现的代码因为测试类命名不同而被脚本误杀。
 - 验收清单 `deliverables` 仅填 markdown，因任务生成时 markdown 就存在，导致交付物检查失去所有防御价值。
+- 纠偏型 Ticket 若只跑旧单测，前置校验会因旧单测通过而“静默击穿”，直接跳过开发；必须加入新特性/用例门禁。
+- 跨模块接口/DTO 修改后未执行父 POM `mvn install -DskipTests`，导致单测运行时抛出 `NoSuchMethodError`。
+- Windows PowerShell 5.1 原生不支持 `**` 递归通配符；在 `Select-String -Path` 中使用 `**` 会直接返回空导致误杀；跨目录检索必须使用 `Get-ChildItem -Recurse | Select-String`。
+- 验收失败仅给 CLI 传递 `stderr` 路径，沙盒内无法读取工作区外路径，导致模型进入盲试死循环。
+
 
 

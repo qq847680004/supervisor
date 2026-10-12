@@ -423,7 +423,17 @@ function Run-Independent-Tests([object]$Ticket,[object]$Entry,[string]$EvidenceD
   $code=if(Test-Path -LiteralPath $exit){[int]([IO.File]::ReadAllText($exit).Trim())}else{999}
   $runs.Add([pscustomobject]@{Executable=$exe;Args=$args;ExitCode=$code;Stdout=$out;Stderr=$err})
   Write-DispatchProgress 'TEST' $Ticket.ID ("独立测试 $i/$(@($Entry.tests).Count) 退出码=$code；证据=$out")
-  if($code -ne 0){return [pscustomobject]@{Okay=$false;Reason="Independent test #$i failed ($code): $err";Runs=@($runs.ToArray())}}
+  if($code -ne 0){
+   $errSnippet = ''
+   if(Test-Path -LiteralPath $err){
+    try {
+     $errLines = @(Get-Content -LiteralPath $err | Where-Object {$_ -and $_.Trim()} | Select-Object -Last 6)
+     if($errLines.Count -gt 0){ $errSnippet = ($errLines -join ' ') }
+    } catch {}
+   }
+   $failReason = if($errSnippet){ "Independent test #$i failed ($code): $errSnippet" } else { "Independent test #$i failed ($code): $err" }
+   return [pscustomobject]@{Okay=$false;Reason=$failReason;Runs=@($runs.ToArray())}
+  }
  }
  return [pscustomobject]@{Okay=$true;Reason='';Runs=@($runs.ToArray())}
 }
@@ -718,12 +728,17 @@ try{
    if($r.State -eq 'STARTING' -or $r.State -eq 'RUNNING'){
     $r.State='BLOCKED';$r.Reason='Unresolved in-flight process';Save-State;continue
    }
-   # 开工前前置校验：与完成后校验一致，判断最前一个 ticket[ ] 是否实际已开发完成
-   $preReason=Verify-Ticket $selected $r ([bool](@($r.Attempts).Count -gt 0))
-   if(-not $preReason){
-    $r.State='DONE';$r.Reason='Independently verified before dispatch';Save-State
-    Write-DispatchProgress 'DONE' $selected.ID '开工前校验确认已开发完成；已自动标记 [x]，进入下一 Ticket'
-    $progress=$true;continue
+   # 开工前前置校验：仅当 Ticket 存在既有已标记完成或历史会话尝试时，才校验是否无需重复开发；全新未标记未尝试的任务必须进入实际 CLI 开发
+   $hasPriorProof = ($selected.Checked -or (Ticket-Checks ([IO.File]::ReadAllText($selected.TicketPath, [Text.Encoding]::UTF8))).All -or (@($r.Attempts).Count -gt 0))
+   if ($hasPriorProof) {
+    $preReason=Verify-Ticket $selected $r ([bool](@($r.Attempts).Count -gt 0))
+    if(-not $preReason){
+     $r.State='DONE';$r.Reason='Independently verified before dispatch';Save-State
+     Write-DispatchProgress 'DONE' $selected.ID '开工前校验确认已开发完成；已自动标记 [x]，进入下一 Ticket'
+     $progress=$true;continue
+    }
+   } else {
+    $preReason='全新未开发任务（待实际启动开发）'
    }
    $modeDesc=if($r.SessionId){("继续开发既有任务（同一窗口续接 Session="+$r.SessionId+"）")}else{'全新开发任务（新会话）'}
    Write-DispatchProgress 'STARTING' $selected.ID ("开工前状态确认：$modeDesc；前置校验原因=$preReason")
