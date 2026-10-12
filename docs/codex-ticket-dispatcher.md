@@ -54,8 +54,8 @@
 - 当 Codex 输出 `Selected model is at capacity. Please try a different model`（或 stderr/JSONL 中出现模型 capacity 过载限制）时：
   1. **随机退避重试**：调度器捕获该错误后，随机等待 2~6 秒（`Get-Random -Minimum 2 -Maximum 7`），然后自动重试继续未完成的任务；若已有 SessionId 则原会话 `resume`，若建联前即过载则允许重新建立会话；
   2. **重试次数上限**：针对 capacity 场景的重试上限单独提升至 **50 次**（`-MaxCapacityRetries 50`）；非 capacity 的普通中断/失败上限默认设置为 **10 次**（`-MaxAttemptsPerTicket 10`）；
-  3. **模型轮换机制**：若同一模型连续遇到 3 次 capacity 报错（`-CapacityRotateThreshold 3`），调度器自动轮换到候选池的下一个模型，候选池依次为：`gpt-6.1-sol` $\rightarrow$ `gpt-6-sol` $\rightarrow$ `gpt-5.6-sol` $\rightarrow$ `gpt-5.6-terra`；
-  4. **推理档位继承**：若当前批次启动时指定为 High 档位（`-Effort high`），轮换后的模型保持 High 推理档位；其他情况默认 Medium 档位。
+  3. **模型轮换机制**：若同一模型连续遇到 3 次 capacity 报错（`-CapacityRotateThreshold 3`），调度器自动轮换到候选池的下一个模型，候选池依次为：`gpt-6.1-sol` $\rightarrow$ `gpt-6-sol` $\rightarrow$ `gpt-6-luna (Max)` $\rightarrow$ `gpt-6-luna (Extra High)` $\rightarrow$ `gpt-6-luna (High)` $\rightarrow$ `gpt-5.6-terra`；
+  4. **推理档位继承与固定档位**：GPT-6 Luna 的 Max 档固定为 `max`，Extra High 档固定为 `xhigh`，High 档固定为 `high`（作为三个独立固定档位模型节点）；其余模型继承当前批次指定的推理档位（Medium/High/Max/Extra High）。
 
 ## 运行与恢复
 

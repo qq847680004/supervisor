@@ -7,7 +7,7 @@ param(
  [string]$RunId,
  [string]$CodexPath='codex.cmd',
  [string]$Model='gpt-6.1-sol',
- [ValidateSet('low','medium','high','xhigh')][string]$Effort='medium',
+ [ValidateSet('low','medium','high','xhigh','max')][string]$Effort='medium',
  [ValidateRange(1,100)][int]$MaxAttemptsPerTicket=10,
  [ValidateRange(1,200)][int]$MaxCapacityRetries=50,
  [ValidateRange(1,20)][int]$CapacityRotateThreshold=3,
@@ -35,21 +35,45 @@ $script:Manifest=$null
 $script:ProgressPath=$null
 
 $script:ModelRotationPool = @(
- 'gpt-6.1-sol',
- 'gpt-6-sol',
- 'gpt-5.6-sol',
- 'gpt-5.6-terra'
+ [pscustomobject]@{ Model = 'gpt-6.1-sol'; Effort = $null },
+ [pscustomobject]@{ Model = 'gpt-6-sol'; Effort = $null },
+ [pscustomobject]@{ Model = 'gpt-6-luna'; Effort = 'max' },
+ [pscustomobject]@{ Model = 'gpt-6-luna'; Effort = 'xhigh' },
+ [pscustomobject]@{ Model = 'gpt-6-luna'; Effort = 'high' },
+ [pscustomobject]@{ Model = 'gpt-5.6-terra'; Effort = $null }
 )
-$script:TargetEffort = if ($Effort -eq 'high') { 'high' } else { 'medium' }
+$script:TargetEffort = if ($Effort -eq 'high') { 'high' } elseif ($Effort -eq 'xhigh') { 'xhigh' } elseif ($Effort -eq 'max') { 'max' } else { 'medium' }
 
-function Next-Rotated-Model([string]$CurrentModel) {
- $cur = if($CurrentModel){ $CurrentModel.ToLowerInvariant().Trim() } else { $script:ModelRotationPool[0] }
- $idx = [array]::IndexOf($script:ModelRotationPool, $cur)
- if($idx -lt 0) {
-  return $script:ModelRotationPool[0]
+function Next-Rotated-Model([string]$CurrentModel, [string]$CurrentEffort) {
+ $curM = if($CurrentModel){ $CurrentModel.ToLowerInvariant().Trim() } else { '' }
+ $curE = if($CurrentEffort){ $CurrentEffort.ToLowerInvariant().Trim() } else { '' }
+ $idx = -1
+ for ($i = 0; $i -lt $script:ModelRotationPool.Count; $i++) {
+  $item = $script:ModelRotationPool[$i]
+  $itemM = $item.Model.ToLowerInvariant().Trim()
+  if ($itemM -eq $curM) {
+   if ($null -ne $item.Effort) {
+    if ($item.Effort.ToLowerInvariant().Trim() -eq $curE) {
+     $idx = $i
+     break
+    }
+   } else {
+    $idx = $i
+    break
+   }
+  }
  }
- $nextIdx = ($idx + 1) % $script:ModelRotationPool.Count
- return $script:ModelRotationPool[$nextIdx]
+ if ($idx -lt 0) {
+  $nextItem = $script:ModelRotationPool[0]
+ } else {
+  $nextIdx = ($idx + 1) % $script:ModelRotationPool.Count
+  $nextItem = $script:ModelRotationPool[$nextIdx]
+ }
+ $eff = if ($null -ne $nextItem.Effort) { $nextItem.Effort } else { $script:TargetEffort }
+ return [pscustomobject]@{
+  Model = $nextItem.Model
+  Effort = $eff
+ }
 }
 
 function Resolve-Exact([string]$Path) {
@@ -320,11 +344,17 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
   if($null -eq $Record.PSObject.Properties['ConsecutiveCapacityErrors']){$Record | Add-Member -NotePropertyName ConsecutiveCapacityErrors -NotePropertyValue 0}
   $Record.ConsecutiveCapacityErrors = [int]$Record.ConsecutiveCapacityErrors + 1
   $activeModel = if($Record.CurrentModel){ [string]$Record.CurrentModel } else { $Model }
+  $activeEffort = if($null -ne $Record.PSObject.Properties['CurrentEffort'] -and $Record.CurrentEffort){ [string]$Record.CurrentEffort } else { $script:TargetEffort }
 
   if([int]$Record.ConsecutiveCapacityErrors -ge $CapacityRotateThreshold){
-   $nextModel = Next-Rotated-Model $activeModel
-   Write-DispatchProgress 'ROTATE_MODEL' $Record.ID ("模型 $activeModel 连续达到 $CapacityRotateThreshold 次 capacity 报错，自动轮换至 $nextModel / $script:TargetEffort")
-   $Record.CurrentModel = $nextModel
+   $nextTarget = Next-Rotated-Model $activeModel $activeEffort
+   Write-DispatchProgress 'ROTATE_MODEL' $Record.ID ("模型 $activeModel 连续达到 $CapacityRotateThreshold 次 capacity 报错，自动轮换至 $($nextTarget.Model) / $($nextTarget.Effort)")
+   $Record.CurrentModel = $nextTarget.Model
+   if($null -eq $Record.PSObject.Properties['CurrentEffort']){
+    $Record | Add-Member -NotePropertyName CurrentEffort -NotePropertyValue $nextTarget.Effort -Force
+   } else {
+    $Record.CurrentEffort = $nextTarget.Effort
+   }
    $Record.ConsecutiveCapacityErrors = 0
   }
 
@@ -333,7 +363,8 @@ function Wait-For-Attempt([object]$Record,[object]$Attempt){
   $Record.Reason="Selected model is at capacity (retry $capCount/$MaxCapacityRetries)"
   Save-State
   $delay = Get-Random -Minimum 2 -Maximum 7
-  Write-DispatchProgress 'CAPACITY_RETRY' $Record.ID ("检测到模型 capacity 报错；第 $capCount/$MaxCapacityRetries 次；当前模型=$($Record.CurrentModel) / $script:TargetEffort；随机退避 $delay 秒后重试...")
+  $displayEffort = if($null -ne $Record.PSObject.Properties['CurrentEffort'] -and $Record.CurrentEffort){ $Record.CurrentEffort } else { $script:TargetEffort }
+  Write-DispatchProgress 'CAPACITY_RETRY' $Record.ID ("检测到模型 capacity 报错；第 $capCount/$MaxCapacityRetries 次；当前模型=$($Record.CurrentModel) / $displayEffort；随机退避 $delay 秒后重试...")
   Start-Sleep -Seconds $delay
   return $true
  }
@@ -465,6 +496,16 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  if($null -eq $Record.PSObject.Properties['CurrentModel'] -or -not $Record.CurrentModel){
   $Record | Add-Member -NotePropertyName CurrentModel -NotePropertyValue $Model -Force
  }
+ if($null -eq $Record.PSObject.Properties['CurrentEffort'] -or -not $Record.CurrentEffort){
+  $initEffort = $script:TargetEffort
+  foreach ($item in $script:ModelRotationPool) {
+   if ($item.Model.ToLowerInvariant().Trim() -eq $Model.ToLowerInvariant().Trim() -and $null -ne $item.Effort) {
+    $initEffort = $item.Effort
+    break
+   }
+  }
+  $Record | Add-Member -NotePropertyName CurrentEffort -NotePropertyValue $initEffort -Force
+ }
  if($null -eq $Record.PSObject.Properties['ConsecutiveCapacityErrors']){
   $Record | Add-Member -NotePropertyName ConsecutiveCapacityErrors -NotePropertyValue 0 -Force
  }
@@ -487,7 +528,7 @@ function Invoke-Ticket([object]$Ticket,[object]$Record,[string]$ResolvedCodex){
  }
  $n=@($Record.Attempts).Count+1
  $activeModel=[string]$Record.CurrentModel
- $activeEffort=$script:TargetEffort
+ $activeEffort=if($null -ne $Record.PSObject.Properties['CurrentEffort'] -and $Record.CurrentEffort){ [string]$Record.CurrentEffort } else { $script:TargetEffort }
  $dir=Join-Path $script:BatchDir ('attempt-'+(SHA $Ticket.Key).Substring(0,16)+'-'+$n)
  [void](New-Item -ItemType Directory -Path $dir -Force)
  $promptPath=Join-Path $dir 'prompt.txt'
